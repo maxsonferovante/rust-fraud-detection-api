@@ -17,3 +17,9 @@ futures-util = "0.3"
 rayon = "1.10"
 half = { version = "2.4", features = ["serde"] }
 rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = 'abort'
