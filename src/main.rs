@@ -40,37 +40,18 @@ async fn main() -> anyhow::Result<()> {
     let mcc_file = File::open("resources/mcc_risk.json")?;
     let mcc_risks: HashMap<String, f32> = serde_json::from_reader(mcc_file)?;
 
-    // Load IVF binary data
-    let mut centroid_file = File::open("resources/centroids.bin")?;
-    let mut vec_file = File::open("resources/ivf_vectors.bin")?;
-    let mut label_file = File::open("resources/ivf_labels.bin")?;
-    let mut offset_file = File::open("resources/ivf_offsets.bin")?;
+    // Load IVF binary data using memory mapping (mmap)
+    let centroid_file = File::open("resources/centroids.bin")?;
+    let vec_file = File::open("resources/ivf_vectors.bin")?;
+    let label_file = File::open("resources/ivf_labels.bin")?;
+    let offset_file = File::open("resources/ivf_offsets.bin")?;
 
-    let c_len = centroid_file.metadata()?.len() as usize;
-    let v_len = vec_file.metadata()?.len() as usize;
-    let l_len = label_file.metadata()?.len() as usize;
-    let o_len = offset_file.metadata()?.len() as usize;
+    let centroid_mmap = unsafe { memmap2::MmapOptions::new().map(&centroid_file)? };
+    let vec_mmap = unsafe { memmap2::MmapOptions::new().map(&vec_file)? };
+    let label_mmap = unsafe { memmap2::MmapOptions::new().map(&label_file)? };
+    let offset_mmap = unsafe { memmap2::MmapOptions::new().map(&offset_file)? };
 
-    let mut centroids = vec![[0.0f32; 14]; c_len / (14 * 4)];
-    let mut vectors = vec![0.0f32; v_len / 4];
-    let mut labels = vec![0u8; l_len];
-    let mut offsets = vec![(0u32, 0u32); o_len / 8];
-
-    unsafe {
-        let c_slice = std::slice::from_raw_parts_mut(centroids.as_mut_ptr() as *mut u8, c_len);
-        centroid_file.read_exact(c_slice)?;
-
-        let v_slice = std::slice::from_raw_parts_mut(vectors.as_mut_ptr() as *mut u8, v_len);
-        vec_file.read_exact(v_slice)?;
-
-        let l_slice = std::slice::from_raw_parts_mut(labels.as_mut_ptr() as *mut u8, l_len);
-        label_file.read_exact(l_slice)?;
-
-        let o_slice = std::slice::from_raw_parts_mut(offsets.as_mut_ptr() as *mut u8, o_len);
-        offset_file.read_exact(o_slice)?;
-    }
-
-    let vector_store = VectorStore::from_binary(centroids, vectors, labels, offsets);
+    let vector_store = VectorStore::from_mmaps(centroid_mmap, vec_mmap, label_mmap, offset_mmap);
 
     let state = Arc::new(AppState {
         vector_store,

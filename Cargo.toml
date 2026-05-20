@@ -17,6 +17,7 @@ futures-util = "0.3"
 rayon = "1.10"
 half = { version = "2.4", features = ["serde"] }
 rand = "0.8"
+memmap2 = "0.9.10"
 
 [profile.release]
 opt-level = 3
