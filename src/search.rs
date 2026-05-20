@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use half::f16;
 
 #[derive(PartialEq, Clone, Copy)]
 struct Neighbor {
@@ -25,7 +24,7 @@ impl PartialOrd for Neighbor {
 
 pub struct VectorStore {
     centroids: Vec<[f32; 14]>,
-    vectors: Vec<f16>, 
+    vectors: Vec<f32>, 
     labels: Vec<u8>,
     offsets: Vec<(u32, u32)>, // (start, size)
 }
@@ -33,7 +32,7 @@ pub struct VectorStore {
 impl VectorStore {
     pub fn from_binary(
         centroids: Vec<[f32; 14]>,
-        vectors: Vec<f16>,
+        vectors: Vec<f32>,
         labels: Vec<u8>,
         offsets: Vec<(u32, u32)>,
     ) -> Self {
@@ -45,15 +44,15 @@ impl VectorStore {
         }
     }
 
-    pub fn find_k_nearest(&self, query: &[f32; 14], k: usize) -> Vec<bool> {
+    pub fn find_k_nearest(&self, query: &[f32; 14], k: usize, n_probes: usize) -> Vec<bool> {
         let mut heap: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(k);
         
-        // 1. Find the top N nearest centroids (e.g., N=6)
-        let n_probes = 6;
+        // 1. Find the top N nearest centroids
         let mut centroid_heap: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(n_probes);
         
         for (idx, c) in self.centroids.iter().enumerate() {
             let mut d_sq = 0.0;
+            // Using a loop that the compiler can easily auto-vectorize
             for j in 0..14 {
                 let d = query[j] - c[j];
                 d_sq += d * d;
@@ -78,9 +77,9 @@ impl VectorStore {
                 let v = &self.vectors[vec_start..vec_start+14];
                 
                 let mut d_sq = 0.0;
-                // Manual unroll for speed
+                // Optimization: using iterators or fixed-size loops often helps auto-vectorization
                 for j in 0..14 {
-                    let d = query[j] - v[j].to_f32();
+                    let d = query[j] - v[j];
                     d_sq += d * d;
                 }
 

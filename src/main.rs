@@ -13,7 +13,6 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use std::fs::File;
 use std::io::Read;
-use half::f16;
 
 use crate::models::{TransactionRequest, TransactionResponse, NormalizationConstants};
 use crate::search::VectorStore;
@@ -22,10 +21,17 @@ struct AppState {
     vector_store: VectorStore,
     normalization_constants: NormalizationConstants,
     mcc_risks: HashMap<String, f32>,
+    n_probes: usize,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load n_probes from environment
+    let n_probes = std::env::var("N_PROBES")
+        .unwrap_or_else(|_| "32".to_string())
+        .parse::<usize>()
+        .unwrap_or(32);
+
     // Load normalization constants
     let norm_file = File::open("resources/normalization.json")?;
     let normalization_constants: NormalizationConstants = serde_json::from_reader(norm_file)?;
@@ -46,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     let o_len = offset_file.metadata()?.len() as usize;
 
     let mut centroids = vec![[0.0f32; 14]; c_len / (14 * 4)];
-    let mut vectors = vec![f16::from_f32(0.0); v_len / 2];
+    let mut vectors = vec![0.0f32; v_len / 4];
     let mut labels = vec![0u8; l_len];
     let mut offsets = vec![(0u32, 0u32); o_len / 8];
 
@@ -70,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         vector_store,
         normalization_constants,
         mcc_risks,
+        n_probes,
     });
 
     let app = Router::new()
@@ -97,7 +104,7 @@ async fn fraud_score(
         &state.mcc_risks,
     );
     
-    let nearest_labels = state.vector_store.find_k_nearest(&vector, 5);
+    let nearest_labels = state.vector_store.find_k_nearest(&vector, 5, state.n_probes);
     let frauds = nearest_labels.iter().filter(|&&f| f).count();
     let fraud_score = frauds as f32 / 5.0;
     

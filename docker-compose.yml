@@ -14,12 +14,13 @@ services:
       resources:
         limits:
           cpus: "0.20"
-          memory: "30MB"
+          memory: "20MB"
 
   api1:
     build: .
     environment:
       - RUST_LOG=off
+      - N_PROBES=10
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9999/ready"]
       interval: 5s
@@ -30,12 +31,13 @@ services:
       resources:
         limits:
           cpus: "0.40"
-          memory: "160MB"
+          memory: "165MB"
 
   api2:
     build: .
     environment:
       - RUST_LOG=off
+      - N_PROBES=10
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9999/ready"]
       interval: 5s
@@ -46,7 +48,7 @@ services:
       resources:
         limits:
           cpus: "0.40"
-          memory: "160MB"
+          memory: "165MB"
 
 networks:
   default:

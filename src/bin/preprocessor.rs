@@ -8,10 +8,9 @@ use serde::de::{Visitor, SeqAccess, Deserializer};
 use std::fmt;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
-use half::f16;
 
 const K: usize = 2048; // Increased clusters to reduce search space per probe
-const MAX_ITER: usize = 20; // More iterations for better quality with more clusters
+const MAX_ITER: usize = 50; // More iterations for better quality with more clusters
 
 struct RawVector {
     vector: [f32; 14],
@@ -148,8 +147,7 @@ fn main() -> anyhow::Result<()> {
         offset_file.write_all(&cluster_size.to_le_bytes())?;
         
         for rv in cluster {
-            let f16_vec: Vec<f16> = rv.vector.iter().map(|&x| f16::from_f32(x)).collect();
-            let bytes: &[u8] = unsafe { std::slice::from_raw_parts(f16_vec.as_ptr() as *const u8, 14 * 2) };
+            let bytes: &[u8] = unsafe { std::slice::from_raw_parts(rv.vector.as_ptr() as *const u8, 14 * 4) };
             vector_file.write_all(bytes)?;
             
             let label = if rv.is_fraud { 1u8 } else { 0u8 };
