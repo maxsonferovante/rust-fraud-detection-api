@@ -130,4 +130,61 @@ mod tests {
             assert!((vector[i] - expected[i]).abs() < 1e-4, "Dimension {} failed: expected {}, got {}", i, expected[i], vector[i]);
         }
     }
+
+    #[test]
+    fn test_clamp() {
+        assert_eq!(clamp(-1.0), 0.0);
+        assert_eq!(clamp(0.5), 0.5);
+        assert_eq!(clamp(2.0), 1.0);
+    }
+
+    #[test]
+    fn test_normalization_edge_cases() {
+        let req = TransactionRequest {
+            id: "tx-edge".to_string(),
+            transaction: TransactionData {
+                amount: 100.0,
+                installments: 1,
+                requested_at: Utc.with_ymd_and_hms(2026, 3, 11, 12, 0, 0).unwrap(),
+            },
+            customer: CustomerData {
+                avg_amount: 0.0, // Should trigger fallback in amount_vs_avg
+                tx_count_24h: 1,
+                known_merchants: vec![], // Should mark as unknown_merchant
+            },
+            merchant: MerchantData {
+                id: "MERC-NEW".to_string(),
+                mcc: "9999".to_string(), // Unknown MCC
+                avg_amount: 50.0,
+            },
+            terminal: TerminalData {
+                is_online: true,
+                card_present: false,
+                km_from_home: 50.0,
+            },
+            last_transaction: None, // Should result in -1.0 for features 5 and 6
+        };
+
+        let constants = NormalizationConstants {
+            max_amount: 1000.0,
+            max_installments: 10.0,
+            amount_vs_avg_ratio: 5.0,
+            max_minutes: 100.0,
+            max_km: 100.0,
+            max_tx_count_24h: 10.0,
+            max_merchant_avg_amount: 100.0,
+        };
+
+        let mcc_risks = HashMap::new(); // Empty map, should fallback to 0.5
+
+        let vector = normalize(&req, &constants, &mcc_risks);
+
+        assert_eq!(vector[2], 1.0); // amount_vs_avg with 0 avg falls back to 1.0
+        assert_eq!(vector[5], -1.0); // missing last transaction
+        assert_eq!(vector[6], -1.0); // missing last transaction
+        assert_eq!(vector[9], 1.0); // is_online = true
+        assert_eq!(vector[10], 0.0); // card_present = false
+        assert_eq!(vector[11], 1.0); // unknown merchant
+        assert_eq!(vector[12], 0.5); // unknown MCC risk fallback
+    }
 }

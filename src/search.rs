@@ -133,3 +133,57 @@ impl VectorStore {
         heap.into_iter().map(|n| n.index_or_fraud == 1).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memmap2::MmapMut;
+
+    fn create_mmap_from_slice<T: Copy>(data: &[T]) -> Mmap {
+        let size = data.len() * std::mem::size_of::<T>();
+        let mut mmap = MmapMut::map_anon(size).unwrap();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr() as *const u8,
+                mmap.as_mut_ptr(),
+                size,
+            );
+        }
+        mmap.make_read_only().unwrap()
+    }
+
+    #[test]
+    fn test_neighbor_ordering() {
+        let n1 = Neighbor { distance_sq: 1.0, index_or_fraud: 0 };
+        let n2 = Neighbor { distance_sq: 2.0, index_or_fraud: 1 };
+        // Since we want max-heap behavior, Ord returns self vs other.
+        // n1 < n2 because 1.0 < 2.0
+        assert!(n1 < n2);
+    }
+
+    #[test]
+    fn test_find_k_nearest() {
+        let centroids = vec![[0.0; 14], [10.0; 14]];
+        let mut vectors = vec![0.0f32; 14 * 2];
+        for i in 0..14 {
+            vectors[14 + i] = 10.0; // second vector
+        }
+        
+        let labels: Vec<u8> = vec![0, 1];
+        let offsets: Vec<(u32, u32)> = vec![(0, 1), (1, 1)];
+
+        let store = VectorStore::from_mmaps(
+            create_mmap_from_slice(&centroids),
+            create_mmap_from_slice(&vectors),
+            create_mmap_from_slice(&labels),
+            create_mmap_from_slice(&offsets),
+        );
+
+        let query = [0.1; 14];
+        let nearest = store.find_k_nearest(&query, 2, 2);
+        
+        assert_eq!(nearest.len(), 2);
+        assert!(nearest.contains(&true));
+        assert!(nearest.contains(&false));
+    }
+}

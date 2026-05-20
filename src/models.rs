@@ -76,3 +76,18 @@ pub struct ReferenceData {
     pub vector: [f32; 14],
     pub label: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transaction_response_serialization() {
+        let resp = TransactionResponse {
+            approved: true,
+            fraud_score: 0.15,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(json, r#"{"approved":true,"fraud_score":0.15}"#);
+    }
+}
