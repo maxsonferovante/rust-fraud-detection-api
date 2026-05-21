@@ -1,0 +1,4 @@
+{
+  "amount": {"mean": 50.0, "std": 20.0},
+  "km_from_home": {"mean": 10.0, "std": 5.0}
+}

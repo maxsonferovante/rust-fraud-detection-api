@@ -34,6 +34,7 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64
           tags: maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
