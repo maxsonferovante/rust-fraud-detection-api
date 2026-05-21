@@ -1,0 +1,63 @@
+name: CI/CD Submission
+
+on:
+  pull_request:
+    branches:
+      - submission
+    types: [opened, synchronize, reopened]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.base.ref == 'submission' && github.event.pull_request.head.ref == 'master'
+    steps:
+      - name: Checkout master branch
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Set up Docker Buildx
+        uses: actions/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Generate Timestamp Tag
+        id: vars
+        run: echo "tag=$(date +'%d-%m-%Y-%H-%M-%S')" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Prepare Submission Branch
+        run: |
+          # Configure git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Fetch and switch to submission branch
+          git fetch origin submission
+          git checkout submission
+          
+          # Clean submission branch (remove everything)
+          git rm -rf .
+          
+          # Checkout necessary files from master
+          git checkout master -- nginx.conf info.json docker-compose.yml README.md LICENSE
+          
+          # Update docker-compose.yml with the new image tag
+          sed -i "s|build: .|image: maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}|g" docker-compose.yml
+          
+          # Commit and push back to submission branch
+          git add nginx.conf info.json docker-compose.yml README.md LICENSE
+          git commit -m "chore: automatic submission update - tag ${{ steps.vars.outputs.tag }}"
+          git push origin submission
