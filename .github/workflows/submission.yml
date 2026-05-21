@@ -17,7 +17,7 @@ jobs:
           ref: master
 
       - name: Set up Docker Buildx
-        uses: actions/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -43,20 +43,20 @@ jobs:
           # Configure git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           # Fetch and switch to submission branch
           git fetch origin submission
           git checkout submission
-          
+
           # Clean submission branch (remove everything)
           git rm -rf .
-          
+
           # Checkout necessary files from master
           git checkout master -- nginx.conf info.json docker-compose.yml README.md LICENSE
-          
+
           # Update docker-compose.yml with the new image tag
           sed -i "s|build: .|image: maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}|g" docker-compose.yml
-          
+
           # Commit and push back to submission branch
           git add nginx.conf info.json docker-compose.yml README.md LICENSE
           git commit -m "chore: automatic submission update - tag ${{ steps.vars.outputs.tag }}"
