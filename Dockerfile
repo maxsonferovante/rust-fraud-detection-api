@@ -7,10 +7,10 @@ WORKDIR /app
 COPY . .
 
 # Build the preprocessor and process the data (IVF)
-RUN RUSTFLAGS="-C target-cpu=native" cargo run --release --bin preprocessor
+RUN cargo run --release --bin preprocessor
 
 # Build the main API
-RUN RUSTFLAGS="-C target-cpu=native" cargo build --release
+RUN cargo build --release
 
 # Stage 2: Runtime
 FROM debian:bookworm-slim AS runtime
