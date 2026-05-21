@@ -115,18 +115,25 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("Assigning vectors to clusters...");
-    let mut clusters: Vec<Vec<&RawVector>> = vec![Vec::new(); K];
-    for rv in &vectors {
-        let mut min_dist = f32::MAX;
-        let mut best_idx = 0;
-        for (i, c) in centroids.iter().enumerate() {
-            let d = dist_sq(&rv.vector, c);
-            if d < min_dist {
-                min_dist = d;
-                best_idx = i;
+    let cluster_assignments: Vec<usize> = vectors
+        .par_iter()
+        .map(|rv| {
+            let mut min_dist = f32::MAX;
+            let mut best_idx = 0;
+            for (i, c) in centroids.iter().enumerate() {
+                let d = dist_sq(&rv.vector, c);
+                if d < min_dist {
+                    min_dist = d;
+                    best_idx = i;
+                }
             }
-        }
-        clusters[best_idx].push(rv);
+            best_idx
+        })
+        .collect();
+
+    let mut clusters: Vec<Vec<&RawVector>> = vec![Vec::new(); K];
+    for (i, &best_idx) in cluster_assignments.iter().enumerate() {
+        clusters[best_idx].push(&vectors[i]);
     }
 
     println!("Writing IVF binary files...");
