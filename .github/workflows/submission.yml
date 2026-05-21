@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   build-and-deploy:
@@ -80,3 +81,20 @@ jobs:
           
           # Push using the GITHUB_TOKEN for authentication
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git submission
+
+      - name: Comment and Close PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          gh pr comment $PR_NUMBER --body "🚀 **Submissão para a Rinha de Backend 2026 atualizada!**
+          
+          A branch \`submission\` foi sincronizada com sucesso e a nova imagem multi-plataforma (amd64/arm64) foi publicada.
+          
+          **Imagem:** \`maxsonferovante/fraud-detection-api:$TAG\`
+          **Link:** [Docker Hub](https://hub.docker.com/r/maxsonferovante/fraud-detection-api/tags?name=$TAG)
+          
+          Este Pull Request está sendo fechado automaticamente pois o processo de submissão foi concluído."
+          
+          gh pr close $PR_NUMBER
