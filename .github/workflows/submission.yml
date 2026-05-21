@@ -29,6 +29,15 @@ jobs:
         id: vars
         run: echo "tag=$(date +'%d-%m-%Y-%H-%M-%S')" >> $GITHUB_OUTPUT
 
+      - name: Download Official Rinha Resources
+        run: |
+          mkdir -p resources
+          curl -L https://raw.githubusercontent.com/zanfranceschi/rinha-de-backend-2026/main/resources/mcc_risk.json -o resources/mcc_risk.json
+          curl -L https://raw.githubusercontent.com/zanfranceschi/rinha-de-backend-2026/main/resources/normalization.json -o resources/normalization.json
+          curl -L https://raw.githubusercontent.com/zanfranceschi/rinha-de-backend-2026/main/resources/references.json.gz -o resources/references.json.gz
+          curl -L https://raw.githubusercontent.com/zanfranceschi/rinha-de-backend-2026/main/resources/example-payloads.json -o resources/example-payloads.json
+          curl -L https://raw.githubusercontent.com/zanfranceschi/rinha-de-backend-2026/main/resources/example-references.json -o resources/example-references.json
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
