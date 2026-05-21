@@ -1,3 +1,9 @@
 # Rust Fraud Detection API
 
-Uma API de altíssima performance para detecção de fraudes em transações financeiras baseada em busca vetorial.
+{
+"participants": ["Maxson Ferovante"],
+"social": ["https://github.com/maxsonferovante"],
+"source-code-repo": "https://github.com/maxsonferovante/rust-fraud-detection-api",
+"stack": ["rust", "axum", "nginx", "docker"],
+"open_to_work": false
+}
