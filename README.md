@@ -1,4 +1,4 @@
-# Rust Fraud Detection API
+# Rust Fraud Detection API - Rinha Backend 2026
 
 | Field            | Value                                                                                   |
 | ---------------- | --------------------------------------------------------------------------------------- |
