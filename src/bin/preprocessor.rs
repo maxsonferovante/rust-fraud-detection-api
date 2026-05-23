@@ -2,15 +2,18 @@
 mod models;
 
 use std::fs::File;
-use std::io::{BufReader, Write};
+use std::io::{BufReader, BufWriter, Write};
 use flate2::read::GzDecoder;
 use serde::de::{Visitor, SeqAccess, Deserializer};
 use std::fmt;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
 
-const K: usize = 2048; // Increased clusters to reduce search space per probe
-const MAX_ITER: usize = 50; // More iterations for better quality with more clusters
+const K: usize = 2048;     // Número de clusters IVF
+const MAX_ITER: usize = 50; // Máximo de iterações K-means
+// Threshold de convergência: se o deslocamento médio dos centroids for menor
+// que isso, encerra cedo sem precisar de todas as MAX_ITER iterações.
+const CONVERGENCE_EPS: f32 = 1e-6;
 
 struct RawVector {
     vector: [f32; 14],
@@ -38,8 +41,12 @@ impl<'de, 'a> Visitor<'de> for DatasetVisitor<'a> {
     }
 }
 
+/// Distância euclidiana ao quadrado — loop fixo de 14 elementos.
+/// Com RUSTFLAGS="-C target-cpu=native", o compilador auto-vetoriza
+/// usando YMM (AVX2) ou NEON dependendo da arquitetura de build.
+#[inline(always)]
 fn dist_sq(a: &[f32; 14], b: &[f32; 14]) -> f32 {
-    let mut sum = 0.0;
+    let mut sum = 0.0f32;
     for i in 0..14 {
         let d = a[i] - b[i];
         sum += d * d;
@@ -53,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     let file = File::open(ref_path)?;
     let decoder = GzDecoder::new(file);
     let reader = BufReader::new(decoder);
-    
+
     let mut vectors = Vec::with_capacity(3_000_000);
     {
         let mut deserializer = serde_json::Deserializer::from_reader(reader);
@@ -61,14 +68,27 @@ fn main() -> anyhow::Result<()> {
     }
     println!("Loaded {} vectors.", vectors.len());
 
-    println!("Initializing centroids (K={})...", K);
+    // -----------------------------------------------------------------------
+    // Inicialização aleatória dos centroids.
+    //
+    // Nota: K-means++ seria ideal para qualidade, mas com K=2048 e N=3M
+    // o custo de seleção é O(N × K²/2) ≈ 6×10¹² ops — proibitivo mesmo
+    // em paralelo. A inicialização aleatória com dataset grande (3M amostras)
+    // fornece diversidade suficiente para bons clusters.
+    // -----------------------------------------------------------------------
+    println!("Initializing centroids (K={}, random sampling)...", K);
     let mut rng = rand::thread_rng();
     let mut centroids: Vec<[f32; 14]> = vectors
         .choose_multiple(&mut rng, K)
         .map(|rv| rv.vector)
         .collect();
 
-    println!("Running K-means ({} iterations)...", MAX_ITER);
+    // -----------------------------------------------------------------------
+    // K-means com early stopping por convergência.
+    // O loop interno (fold/reduce) já usa par_iter() via rayon.
+    // Com RUSTFLAGS=native, dist_sq é auto-vetorizado → ganho direto aqui.
+    // -----------------------------------------------------------------------
+    println!("Running K-means (max {} iterations, eps={})...", MAX_ITER, CONVERGENCE_EPS);
     for iter in 0..MAX_ITER {
         let new_centroids_data: Vec<([f32; 14], usize)> = vectors
             .par_iter()
@@ -104,16 +124,34 @@ fn main() -> anyhow::Result<()> {
                 },
             );
 
+        // Atualiza centroids e mede deslocamento máximo para early stopping
+        let mut max_shift_sq = 0.0f32;
         for i in 0..K {
             if new_centroids_data[i].1 > 0 {
+                let mut new_c = [0.0f32; 14];
                 for j in 0..14 {
-                    centroids[i][j] = new_centroids_data[i].0[j] / new_centroids_data[i].1 as f32;
+                    new_c[j] = new_centroids_data[i].0[j] / new_centroids_data[i].1 as f32;
                 }
+                let shift = dist_sq(&new_c, &centroids[i]);
+                if shift > max_shift_sq {
+                    max_shift_sq = shift;
+                }
+                centroids[i] = new_c;
             }
         }
-        println!("Iteration {} complete", iter + 1);
+
+        println!("Iteration {} complete (max_shift²={:.2e})", iter + 1, max_shift_sq);
+
+        // Early stopping: centroids estabilizaram, iterações extras não mudam resultado
+        if max_shift_sq < CONVERGENCE_EPS {
+            println!("Converged at iteration {}! Stopping early.", iter + 1);
+            break;
+        }
     }
 
+    // -----------------------------------------------------------------------
+    // Atribuição final dos vetores aos clusters — par_iter já presente.
+    // -----------------------------------------------------------------------
     println!("Assigning vectors to clusters...");
     let cluster_assignments: Vec<usize> = vectors
         .par_iter()
@@ -136,32 +174,69 @@ fn main() -> anyhow::Result<()> {
         clusters[best_idx].push(&vectors[i]);
     }
 
+    // -----------------------------------------------------------------------
+    // Escrita dos arquivos binários.
+    //
+    // Estratégia de paralelismo:
+    //   1. Pré-serialização paralela: cada cluster converte seus vetores em
+    //      bytes via par_iter() → Vec<u8> por cluster. Zero I/O nesta fase.
+    //   2. Escrita sequencial: os buffers pré-computados são escritos em ordem
+    //      (obrigatório — FileSystem não é thread-safe para writes ordenados).
+    //   3. BufWriter: agrupa syscalls write() em chunks de 64KB, eliminando
+    //      o overhead de uma syscall por vetor (era ~3M syscalls por arquivo).
+    // -----------------------------------------------------------------------
+    println!("Pre-serializing cluster buffers in parallel...");
+
+    // Pré-computa os buffers de vetor e label de cada cluster em paralelo
+    let cluster_buffers: Vec<(Vec<u8>, Vec<u8>)> = clusters
+        .par_iter()
+        .map(|cluster| {
+            let mut vbuf = Vec::with_capacity(cluster.len() * 14 * 4);
+            let mut lbuf = Vec::with_capacity(cluster.len());
+            for rv in cluster {
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(rv.vector.as_ptr() as *const u8, 14 * 4)
+                };
+                vbuf.extend_from_slice(bytes);
+                lbuf.push(if rv.is_fraud { 1u8 } else { 0u8 });
+            }
+            (vbuf, lbuf)
+        })
+        .collect();
+
     println!("Writing IVF binary files...");
-    let mut centroid_file = File::create("resources/centroids.bin")?;
+
+    // BufWriter(64KB) elimina syscall por vetor — eram ~3M writes individuais
+    let mut centroid_file = BufWriter::new(File::create("resources/centroids.bin")?);
     for c in &centroids {
-        let bytes: &[u8] = unsafe { std::slice::from_raw_parts(c.as_ptr() as *const u8, 14 * 4) };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(c.as_ptr() as *const u8, 14 * 4)
+        };
         centroid_file.write_all(bytes)?;
     }
+    centroid_file.flush()?;
 
-    let mut vector_file = File::create("resources/ivf_vectors.bin")?;
-    let mut label_file = File::create("resources/ivf_labels.bin")?;
-    let mut offset_file = File::create("resources/ivf_offsets.bin")?;
-    
+    let mut vector_file = BufWriter::new(File::create("resources/ivf_vectors.bin")?);
+    let mut label_file  = BufWriter::new(File::create("resources/ivf_labels.bin")?);
+    let mut offset_file = BufWriter::new(File::create("resources/ivf_offsets.bin")?);
+
+    // Escrita sequencial dos buffers pré-computados (ordem preservada)
     let mut current_offset = 0u32;
-    for cluster in &clusters {
+    for (cluster, (vbuf, lbuf)) in clusters.iter().zip(cluster_buffers.iter()) {
         offset_file.write_all(&current_offset.to_le_bytes())?;
         let cluster_size = cluster.len() as u32;
         offset_file.write_all(&cluster_size.to_le_bytes())?;
-        
-        for rv in cluster {
-            let bytes: &[u8] = unsafe { std::slice::from_raw_parts(rv.vector.as_ptr() as *const u8, 14 * 4) };
-            vector_file.write_all(bytes)?;
-            
-            let label = if rv.is_fraud { 1u8 } else { 0u8 };
-            label_file.write_all(&[label])?;
-        }
+
+        vector_file.write_all(vbuf)?;
+        label_file.write_all(lbuf)?;
+
         current_offset += cluster_size;
     }
+
+    // Flush explícito dos BufWriters antes de encerrar
+    vector_file.flush()?;
+    label_file.flush()?;
+    offset_file.flush()?;
 
     println!("Preprocessing complete. K={}, total vectors={}", K, vectors.len());
     Ok(())
