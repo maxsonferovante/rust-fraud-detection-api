@@ -1,54 +1,61 @@
 services:
   lb:
-    image: nginx:latest
+    build: .
+    command: ["./lb"]
+    environment:
+      - FD_UPSTREAMS=/tmp/sock/api1.sock,/tmp/sock/api2.sock
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - sock-volume:/tmp/sock
     ports:
       - "9999:9999"
     depends_on:
-      api1:
-        condition: service_healthy
-      api2:
-        condition: service_healthy
+      - api1
+      - api2
     deploy:
       resources:
         limits:
-          cpus: "0.20"
+          cpus: "0.16"
           memory: "30MB"
 
   api1:
     build: .
+    command: ["./fraud-detection-api"]
     environment:
       - RUST_LOG=off
-      - N_PROBES=10
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9999/ready"]
-      interval: 5s
-      timeout: 2s
-      retries: 15
-      start_period: 20s
+      - N_PROBES=96
+      - RINHA_INDEX_PATH=resources/specialist.bin
+      - RINHA_SOCK_PATH=/tmp/sock/api1.sock
+    volumes:
+      - sock-volume:/tmp/sock
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.42"
           memory: "160MB"
 
   api2:
     build: .
+    command: ["./fraud-detection-api"]
     environment:
       - RUST_LOG=off
-      - N_PROBES=10
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9999/ready"]
-      interval: 5s
-      timeout: 2s
-      retries: 15
-      start_period: 20s
+      - N_PROBES=96
+      - RINHA_INDEX_PATH=resources/specialist.bin
+      - RINHA_SOCK_PATH=/tmp/sock/api2.sock
+    volumes:
+      - sock-volume:/tmp/sock
+    network_mode: none
     deploy:
       resources:
         limits:
-          cpus: "0.40"
+          cpus: "0.42"
           memory: "160MB"
+
+volumes:
+  sock-volume:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
 
 networks:
   default:

@@ -1,4 +1,6 @@
-use crate::models::{TransactionRequest, NormalizationConstants};
+use crate::json::ParsedTransaction;
+use crate::models::{NormalizationConstants, TransactionRequest};
+use crate::search::{quantize_value, quantize_vector, DIM};
 
 // ---------------------------------------------------------------------------
 // Utilitários de parsing ISO 8601 via fatiamento de bytes — sem chrono,
@@ -46,7 +48,11 @@ pub fn day_of_week(ts: &str) -> u8 {
     // dow: 0 = Domingo, 1 = Segunda, ..., 6 = Sábado (convenção Sakamoto)
     let dow = (y + y / 4 - y / 100 + y / 400 + T[(m - 1) as usize] + d) % 7;
     // Converter para 0 = Segunda, ..., 6 = Domingo
-    if dow == 0 { 6 } else { (dow - 1) as u8 }
+    if dow == 0 {
+        6
+    } else {
+        (dow - 1) as u8
+    }
 }
 
 /// Converte um timestamp ISO 8601 em minutos totais desde 2000-01-01T00:00Z.
@@ -54,11 +60,11 @@ pub fn day_of_week(ts: &str) -> u8 {
 /// Custo: parsing de bytes + ~10 operações aritméticas inteiras. Zero alocações.
 fn datetime_to_minutes(ts: &str) -> i64 {
     let b = ts.as_bytes();
-    let year  = parse_u32_4(&b[0..4]) as i64;
+    let year = parse_u32_4(&b[0..4]) as i64;
     let month = parse_u8_2(&b[5..7]) as i64;
-    let day   = parse_u8_2(&b[8..10]) as i64;
-    let hour  = parse_u8_2(&b[11..13]) as i64;
-    let min   = parse_u8_2(&b[14..16]) as i64;
+    let day = parse_u8_2(&b[8..10]) as i64;
+    let hour = parse_u8_2(&b[11..13]) as i64;
+    let min = parse_u8_2(&b[14..16]) as i64;
 
     // Dias acumulados até o início de cada mês em ano não-bissexto
     const MONTH_DAYS: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -74,11 +80,8 @@ fn datetime_to_minutes(ts: &str) -> i64 {
         0
     };
 
-    let days_since_2000 = y * 365
-        + leap_years
-        + MONTH_DAYS[(month - 1) as usize]
-        + leap_offset
-        + day - 1; // -1: dia 1 = 0 dias decorridos
+    let days_since_2000 =
+        y * 365 + leap_years + MONTH_DAYS[(month - 1) as usize] + leap_offset + day - 1; // -1: dia 1 = 0 dias decorridos
 
     days_since_2000 * 1440 + hour * 60 + min
 }
@@ -145,7 +148,11 @@ pub fn normalize(
     vector[10] = if req.terminal.card_present { 1.0 } else { 0.0 };
 
     // 11: unknown_merchant — comparação de &str, sem alocação
-    let is_known = req.customer.known_merchants.iter().any(|m| *m == req.merchant.id);
+    let is_known = req
+        .customer
+        .known_merchants
+        .iter()
+        .any(|m| *m == req.merchant.id);
     vector[11] = if is_known { 0.0 } else { 1.0 };
 
     // 12: mcc_risk — acesso O(1) via índice numérico, sem hash
@@ -162,15 +169,135 @@ pub fn normalize(
     vector
 }
 
+pub fn normalize_i16(
+    req: &TransactionRequest<'_>,
+    constants: &NormalizationConstants,
+    mcc_table: &[f32],
+) -> [i16; DIM] {
+    quantize_vector(&normalize(req, constants, mcc_table))
+}
+
+pub fn normalize_parsed_i16(
+    req: &ParsedTransaction<'_>,
+    constants: &NormalizationConstants,
+    mcc_table: &[f32],
+) -> [i16; DIM] {
+    let mut vector = [0i16; DIM];
+
+    vector[0] = q(clamp(req.amount / constants.max_amount));
+    vector[1] = q(clamp(req.installments as f32 / constants.max_installments));
+
+    let amount_vs_avg = if req.customer_avg_amount > 0.0 {
+        (req.amount / req.customer_avg_amount) / constants.amount_vs_avg_ratio
+    } else {
+        1.0
+    };
+    vector[2] = q(clamp(amount_vs_avg));
+
+    vector[3] = q(hour_of_day_bytes(req.requested_at) as f32 / 23.0);
+    vector[4] = q(day_of_week_bytes(req.requested_at) as f32 / 6.0);
+
+    if let Some(last_timestamp) = req.last_timestamp {
+        let minutes = minutes_diff_bytes(req.requested_at, last_timestamp);
+        vector[5] = q(clamp(minutes / constants.max_minutes));
+        vector[6] = q(clamp(req.last_km_from_current / constants.max_km));
+    } else {
+        vector[5] = q(-1.0);
+        vector[6] = q(-1.0);
+    }
+
+    vector[7] = q(clamp(req.km_from_home / constants.max_km));
+    vector[8] = q(clamp(req.tx_count_24h as f32 / constants.max_tx_count_24h));
+    vector[9] = q(if req.is_online { 1.0 } else { 0.0 });
+    vector[10] = q(if req.card_present { 1.0 } else { 0.0 });
+
+    let is_known = req.known_merchants[..req.known_merchants_len]
+        .iter()
+        .any(|merchant| *merchant == req.merchant_id);
+    vector[11] = q(if is_known { 0.0 } else { 1.0 });
+
+    vector[12] = q(if req.merchant_mcc < mcc_table.len() {
+        mcc_table[req.merchant_mcc]
+    } else {
+        0.5
+    });
+    vector[13] = q(clamp(
+        req.merchant_avg_amount / constants.max_merchant_avg_amount,
+    ));
+
+    vector
+}
+
+#[inline(always)]
+fn q(value: f32) -> i16 {
+    quantize_value(value)
+}
+
 #[inline(always)]
 fn clamp(v: f32) -> f32 {
-    if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v }
+    if v < 0.0 {
+        0.0
+    } else if v > 1.0 {
+        1.0
+    } else {
+        v
+    }
+}
+
+#[inline(always)]
+fn hour_of_day_bytes(ts: &[u8]) -> u8 {
+    (ts[11] - b'0') * 10 + (ts[12] - b'0')
+}
+
+pub fn day_of_week_bytes(ts: &[u8]) -> u8 {
+    let mut y = parse_u32_4(&ts[0..4]);
+    let m = parse_u8_2(&ts[5..7]) as u32;
+    let d = parse_u8_2(&ts[8..10]) as u32;
+
+    const T: [u32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    if m < 3 {
+        y -= 1;
+    }
+    let dow = (y + y / 4 - y / 100 + y / 400 + T[(m - 1) as usize] + d) % 7;
+    if dow == 0 {
+        6
+    } else {
+        (dow - 1) as u8
+    }
+}
+
+fn datetime_to_minutes_bytes(ts: &[u8]) -> i64 {
+    let year = parse_u32_4(&ts[0..4]) as i64;
+    let month = parse_u8_2(&ts[5..7]) as i64;
+    let day = parse_u8_2(&ts[8..10]) as i64;
+    let hour = parse_u8_2(&ts[11..13]) as i64;
+    let min = parse_u8_2(&ts[14..16]) as i64;
+
+    const MONTH_DAYS: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let leap_offset = if is_leap && month > 2 { 1i64 } else { 0i64 };
+    let y = year - 2000;
+    let leap_years = if y >= 1 {
+        (y - 1) / 4 - (y - 1) / 100 + (y - 1) / 400 + 1
+    } else {
+        0
+    };
+    let days_since_2000 =
+        y * 365 + leap_years + MONTH_DAYS[(month - 1) as usize] + leap_offset + day - 1;
+
+    days_since_2000 * 1440 + hour * 60 + min
+}
+
+#[inline]
+fn minutes_diff_bytes(t1: &[u8], t2: &[u8]) -> f32 {
+    (datetime_to_minutes_bytes(t1) - datetime_to_minutes_bytes(t2)).abs() as f32
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{TransactionData, CustomerData, MerchantData, TerminalData};
+    use crate::models::{CustomerData, MerchantData, TerminalData, TransactionData};
 
     fn make_mcc_table_with(mcc: usize, risk: f32) -> Vec<f32> {
         let mut table = vec![0.5f32; 10000];
@@ -220,27 +347,29 @@ mod tests {
         let vector = normalize(&req, &constants, &mcc_table);
 
         let expected = [
-            0.004112,    // 0: amount
-            0.16666667,  // 1: installments
-            0.05,        // 2: amount_vs_avg
-            0.7826087,   // 3: hora 18/23
-            0.33333334,  // 4: Quarta (2/6)
-            -1.0,        // 5: sem last_transaction
-            -1.0,        // 6: sem last_transaction
-            0.02923,     // 7: km_from_home
-            0.15,        // 8: tx_count_24h
-            0.0,         // 9: not online
-            1.0,         // 10: card present
-            0.0,         // 11: known merchant
-            0.15,        // 12: mcc_risk
-            0.006025,    // 13: merchant_avg_amount
+            0.004112,   // 0: amount
+            0.16666667, // 1: installments
+            0.05,       // 2: amount_vs_avg
+            0.7826087,  // 3: hora 18/23
+            0.33333334, // 4: Quarta (2/6)
+            -1.0,       // 5: sem last_transaction
+            -1.0,       // 6: sem last_transaction
+            0.02923,    // 7: km_from_home
+            0.15,       // 8: tx_count_24h
+            0.0,        // 9: not online
+            1.0,        // 10: card present
+            0.0,        // 11: known merchant
+            0.15,       // 12: mcc_risk
+            0.006025,   // 13: merchant_avg_amount
         ];
 
         for i in 0..14 {
             assert!(
                 (vector[i] - expected[i]).abs() < 1e-4,
                 "Dimension {} failed: expected {}, got {}",
-                i, expected[i], vector[i]
+                i,
+                expected[i],
+                vector[i]
             );
         }
     }
@@ -292,13 +421,13 @@ mod tests {
         let mcc_table = vec![0.5f32; 10000];
         let vector = normalize(&req, &constants, &mcc_table);
 
-        assert_eq!(vector[2], 1.0);   // amount_vs_avg com avg=0 cai para 1.0
-        assert_eq!(vector[5], -1.0);  // sem last_transaction
-        assert_eq!(vector[6], -1.0);  // sem last_transaction
-        assert_eq!(vector[9], 1.0);   // is_online = true
-        assert_eq!(vector[10], 0.0);  // card_present = false
-        assert_eq!(vector[11], 1.0);  // merchant desconhecido
-        assert_eq!(vector[12], 0.5);  // MCC 9999 → fallback 0.5
+        assert_eq!(vector[2], 1.0); // amount_vs_avg com avg=0 cai para 1.0
+        assert_eq!(vector[5], -1.0); // sem last_transaction
+        assert_eq!(vector[6], -1.0); // sem last_transaction
+        assert_eq!(vector[9], 1.0); // is_online = true
+        assert_eq!(vector[10], 0.0); // card_present = false
+        assert_eq!(vector[11], 1.0); // merchant desconhecido
+        assert_eq!(vector[12], 0.5); // MCC 9999 → fallback 0.5
     }
 
     #[test]
@@ -322,13 +451,21 @@ mod tests {
     fn test_minutes_diff_cross_day() {
         // 2026-03-12T01:00Z → 2026-03-11T23:00Z = 120 minutos
         let diff = minutes_diff("2026-03-12T01:00:00Z", "2026-03-11T23:00:00Z");
-        assert!((diff - 120.0).abs() < 0.01, "Expected 120 min, got {}", diff);
+        assert!(
+            (diff - 120.0).abs() < 0.01,
+            "Expected 120 min, got {}",
+            diff
+        );
     }
 
     #[test]
     fn test_minutes_diff_same_day() {
         // 2026-03-11T18:45Z → 2026-03-11T16:30Z = 135 minutos
         let diff = minutes_diff("2026-03-11T18:45:00Z", "2026-03-11T16:30:00Z");
-        assert!((diff - 135.0).abs() < 0.01, "Expected 135 min, got {}", diff);
+        assert!(
+            (diff - 135.0).abs() < 0.01,
+            "Expected 135 min, got {}",
+            diff
+        );
     }
 }

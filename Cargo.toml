@@ -17,9 +17,15 @@ futures-util = "0.3"
 rayon = "1.10"
 half = { version = "2.4", features = ["serde"] }
 rand = "0.8"
-argmin = "0.11.0"
-argmin-observer-slog = "0.2.0"
-argmin-math = { version = "0.5.1", features = ["vec"] }
+libc = "0.2"
+
+[[bin]]
+name = "fraud-detection-api"
+path = "src/main.rs"
+
+[[bin]]
+name = "lb"
+path = "src/bin/lb.rs"
 
 [profile.release]
 opt-level = 3
