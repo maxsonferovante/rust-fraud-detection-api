@@ -1,0 +1,5 @@
+target/
+resources/*.bin
+resources/*.json
+resources/*.json.gz
+.git/
