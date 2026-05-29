@@ -1,18 +1,22 @@
 #[path = "../models.rs"]
 mod models;
 
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
 use flate2::read::GzDecoder;
-use serde::de::{Visitor, SeqAccess, Deserializer};
-use std::fmt;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
+use serde::de::{Deserializer, SeqAccess, Visitor};
+use std::fmt;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Write};
 
-const K: usize = 2048;     // Número de clusters IVF
+const K: usize = 4096; // Número de clusters IVF
+const DIM: usize = 14;
+const SCALE: f32 = 10_000.0;
+const INDEX_MAGIC: u32 = u32::from_le_bytes(*b"RIVF");
+const INDEX_VERSION: u32 = 1;
 const MAX_ITER: usize = 50; // Máximo de iterações K-means
-// Threshold de convergência: se o deslocamento médio dos centroids for menor
-// que isso, encerra cedo sem precisar de todas as MAX_ITER iterações.
+                            // Threshold de convergência: se o deslocamento médio dos centroids for menor
+                            // que isso, encerra cedo sem precisar de todas as MAX_ITER iterações.
 const CONVERGENCE_EPS: f32 = 1e-6;
 
 struct RawVector {
@@ -30,7 +34,9 @@ impl<'de, 'a> Visitor<'de> for DatasetVisitor<'a> {
         formatter.write_str("a sequence of ReferenceData")
     }
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where A: SeqAccess<'de> {
+    where
+        A: SeqAccess<'de>,
+    {
         while let Some(entry) = seq.next_element::<models::ReferenceData>()? {
             self.vectors.push(RawVector {
                 vector: entry.vector,
@@ -45,9 +51,9 @@ impl<'de, 'a> Visitor<'de> for DatasetVisitor<'a> {
 /// Com RUSTFLAGS="-C target-cpu=native", o compilador auto-vetoriza
 /// usando YMM (AVX2) ou NEON dependendo da arquitetura de build.
 #[inline(always)]
-fn dist_sq(a: &[f32; 14], b: &[f32; 14]) -> f32 {
+fn dist_sq(a: &[f32; DIM], b: &[f32; DIM]) -> f32 {
     let mut sum = 0.0f32;
-    for i in 0..14 {
+    for i in 0..DIM {
         let d = a[i] - b[i];
         sum += d * d;
     }
@@ -64,7 +70,9 @@ fn main() -> anyhow::Result<()> {
     let mut vectors = Vec::with_capacity(3_000_000);
     {
         let mut deserializer = serde_json::Deserializer::from_reader(reader);
-        deserializer.deserialize_seq(DatasetVisitor { vectors: &mut vectors })?;
+        deserializer.deserialize_seq(DatasetVisitor {
+            vectors: &mut vectors,
+        })?;
     }
     println!("Loaded {} vectors.", vectors.len());
 
@@ -88,7 +96,10 @@ fn main() -> anyhow::Result<()> {
     // O loop interno (fold/reduce) já usa par_iter() via rayon.
     // Com RUSTFLAGS=native, dist_sq é auto-vetorizado → ganho direto aqui.
     // -----------------------------------------------------------------------
-    println!("Running K-means (max {} iterations, eps={})...", MAX_ITER, CONVERGENCE_EPS);
+    println!(
+        "Running K-means (max {} iterations, eps={})...",
+        MAX_ITER, CONVERGENCE_EPS
+    );
     for iter in 0..MAX_ITER {
         let new_centroids_data: Vec<([f32; 14], usize)> = vectors
             .par_iter()
@@ -140,7 +151,11 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        println!("Iteration {} complete (max_shift²={:.2e})", iter + 1, max_shift_sq);
+        println!(
+            "Iteration {} complete (max_shift²={:.2e})",
+            iter + 1,
+            max_shift_sq
+        );
 
         // Early stopping: centroids estabilizaram, iterações extras não mudam resultado
         if max_shift_sq < CONVERGENCE_EPS {
@@ -175,69 +190,120 @@ fn main() -> anyhow::Result<()> {
     }
 
     // -----------------------------------------------------------------------
-    // Escrita dos arquivos binários.
+    // Escrita do índice compacto:
+    //   header + centroids f32 + sizes/offsets + panel_offsets + vetores i16.
     //
-    // Estratégia de paralelismo:
-    //   1. Pré-serialização paralela: cada cluster converte seus vetores em
-    //      bytes via par_iter() → Vec<u8> por cluster. Zero I/O nesta fase.
-    //   2. Escrita sequencial: os buffers pré-computados são escritos em ordem
-    //      (obrigatório — FileSystem não é thread-safe para writes ordenados).
-    //   3. BufWriter: agrupa syscalls write() em chunks de 64KB, eliminando
-    //      o overhead de uma syscall por vetor (era ~3M syscalls por arquivo).
+    // Em cada cluster, painéis completos de 8 vetores são gravados em SoA
+    // (dimensão → 8 lanes), e a cauda fica AoS. Esse layout é o gancho para
+    // AVX2: cada dimensão de um painel vira um load de 8 i16.
     // -----------------------------------------------------------------------
-    println!("Pre-serializing cluster buffers in parallel...");
+    println!("Pre-serializing int16 SoA cluster buffers in parallel...");
 
-    // Pré-computa os buffers de vetor e label de cada cluster em paralelo
-    let cluster_buffers: Vec<(Vec<u8>, Vec<u8>)> = clusters
+    let cluster_buffers: Vec<(Vec<u8>, Vec<u8>, u32)> = clusters
         .par_iter()
         .map(|cluster| {
-            let mut vbuf = Vec::with_capacity(cluster.len() * 14 * 4);
+            let full_panels = cluster.len() / 8;
+            let tail = cluster.len() % 8;
+            let mut vbuf = Vec::with_capacity(cluster.len() * DIM * std::mem::size_of::<i16>());
             let mut lbuf = Vec::with_capacity(cluster.len());
+            for panel in 0..full_panels {
+                let panel_start = panel * 8;
+                for dim in 0..DIM {
+                    for lane in 0..8 {
+                        let q = quantize_value(cluster[panel_start + lane].vector[dim]);
+                        vbuf.extend_from_slice(&q.to_le_bytes());
+                    }
+                }
+            }
+            let tail_start = full_panels * 8;
+            for lane in 0..tail {
+                for dim in 0..DIM {
+                    let q = quantize_value(cluster[tail_start + lane].vector[dim]);
+                    vbuf.extend_from_slice(&q.to_le_bytes());
+                }
+            }
             for rv in cluster {
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(rv.vector.as_ptr() as *const u8, 14 * 4)
-                };
-                vbuf.extend_from_slice(bytes);
                 lbuf.push(if rv.is_fraud { 1u8 } else { 0u8 });
             }
-            (vbuf, lbuf)
+            let vector_units = (vbuf.len() / std::mem::size_of::<i16>()) as u32;
+            (vbuf, lbuf, vector_units)
         })
         .collect();
 
-    println!("Writing IVF binary files...");
+    println!("Writing resources/specialist.bin...");
+    write_specialist_index(&centroids, &clusters, &cluster_buffers)?;
 
-    // BufWriter(64KB) elimina syscall por vetor — eram ~3M writes individuais
-    let mut centroid_file = BufWriter::new(File::create("resources/centroids.bin")?);
-    for c in &centroids {
-        let bytes = unsafe {
-            std::slice::from_raw_parts(c.as_ptr() as *const u8, 14 * 4)
-        };
-        centroid_file.write_all(bytes)?;
+    println!(
+        "Preprocessing complete. K={}, total vectors={}, output=resources/specialist.bin",
+        K,
+        vectors.len()
+    );
+    Ok(())
+}
+
+#[inline(always)]
+fn quantize_value(value: f32) -> i16 {
+    let rounded4 = (value * SCALE).round() / SCALE;
+    let scaled = (rounded4 * SCALE).round();
+    scaled.clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
+fn write_specialist_index(
+    centroids: &[[f32; DIM]],
+    clusters: &[Vec<&RawVector>],
+    cluster_buffers: &[(Vec<u8>, Vec<u8>, u32)],
+) -> anyhow::Result<()> {
+    let total_vectors: u32 = clusters.iter().map(|cluster| cluster.len() as u32).sum();
+    let mut cluster_offsets = Vec::with_capacity(K + 1);
+    let mut panel_offsets = Vec::with_capacity(K + 1);
+    let mut current_cluster_offset = 0u32;
+    let mut current_panel_offset = 0u32;
+
+    cluster_offsets.push(current_cluster_offset);
+    panel_offsets.push(current_panel_offset);
+    for (cluster, (_, _, vector_units)) in clusters.iter().zip(cluster_buffers.iter()) {
+        current_cluster_offset += cluster.len() as u32;
+        current_panel_offset += *vector_units;
+        cluster_offsets.push(current_cluster_offset);
+        panel_offsets.push(current_panel_offset);
     }
-    centroid_file.flush()?;
 
-    let mut vector_file = BufWriter::new(File::create("resources/ivf_vectors.bin")?);
-    let mut label_file  = BufWriter::new(File::create("resources/ivf_labels.bin")?);
-    let mut offset_file = BufWriter::new(File::create("resources/ivf_offsets.bin")?);
-
-    // Escrita sequencial dos buffers pré-computados (ordem preservada)
-    let mut current_offset = 0u32;
-    for (cluster, (vbuf, lbuf)) in clusters.iter().zip(cluster_buffers.iter()) {
-        offset_file.write_all(&current_offset.to_le_bytes())?;
-        let cluster_size = cluster.len() as u32;
-        offset_file.write_all(&cluster_size.to_le_bytes())?;
-
-        vector_file.write_all(vbuf)?;
-        label_file.write_all(lbuf)?;
-
-        current_offset += cluster_size;
+    let mut file = BufWriter::new(File::create("resources/specialist.bin")?);
+    for value in [
+        INDEX_MAGIC,
+        INDEX_VERSION,
+        total_vectors,
+        DIM as u32,
+        K as u32,
+        SCALE as u32,
+        0,
+        0,
+    ] {
+        file.write_all(&value.to_le_bytes())?;
     }
 
-    // Flush explícito dos BufWriters antes de encerrar
-    vector_file.flush()?;
-    label_file.flush()?;
-    offset_file.flush()?;
+    for centroid in centroids {
+        for &value in centroid {
+            file.write_all(&value.to_le_bytes())?;
+        }
+    }
 
-    println!("Preprocessing complete. K={}, total vectors={}", K, vectors.len());
+    for cluster in clusters {
+        file.write_all(&(cluster.len() as u32).to_le_bytes())?;
+    }
+    for offset in cluster_offsets {
+        file.write_all(&offset.to_le_bytes())?;
+    }
+    for offset in panel_offsets {
+        file.write_all(&offset.to_le_bytes())?;
+    }
+
+    for (vbuf, _, _) in cluster_buffers {
+        file.write_all(vbuf)?;
+    }
+    for (_, lbuf, _) in cluster_buffers {
+        file.write_all(lbuf)?;
+    }
+    file.flush()?;
     Ok(())
 }
