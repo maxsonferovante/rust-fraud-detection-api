@@ -114,8 +114,8 @@ O runtime le `N_PROBES` do env e faz fallback para `192` quando nao existe.
 
 Mesmo assim, fixamos no `docker-compose.yml`:
 
-- `api1`: `N_PROBES=192`
-- `api2`: `N_PROBES=192`
+- `api1`: `N_PROBES=36`
+- `api2`: `N_PROBES=36`
 
 Motivo: deixar explicito e evitar drift entre ambientes.
 
@@ -135,4 +135,3 @@ Motivo: deixar explicito e evitar drift entre ambientes.
 - Se a imagem de resources nao estiver pinned por digest, voce pode ter drift (tag mudou).
 - Se o Docker local nao estiver com permissao para acessar o daemon, o script falha.
 - Rodar o `preprocessor` em maquinas diferentes pode gerar indices diferentes (RNG); por isso a recomendacao eh sempre publicar a imagem e pin por digest, e nao re-gerar no CI.
-
