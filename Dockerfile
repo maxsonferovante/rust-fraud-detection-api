@@ -1,30 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
-# Stage 1: Preprocessor (runs on native host architecture to avoid emulation slowness)
-FROM --platform=$BUILDPLATFORM rust:1.95-slim-bookworm AS preprocessor-runner
+ARG RESOURCES_IMAGE=maxsonferovante/fraud-detection-resources:latest
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev curl && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Copy the minimal set of files needed to build/run the preprocessor.
-# This keeps the expensive preprocessor step cached when only API/LB code changes.
-COPY Cargo.toml Cargo.lock ./
-COPY src/bin/preprocessor.rs ./src/bin/preprocessor.rs
-COPY src/models.rs ./src/models.rs
-
-# Download resources (needed for preprocessing)
-RUN mkdir -p resources && \
-    curl -L https://raw.githubusercontent.com/zanfranceschi/rinha-de-backend-2026/main/resources/mcc_risk.json -o resources/mcc_risk.json && \
-    curl -L https://raw.githubusercontent.com/zanfranceschi/rinha-de-backend-2026/main/resources/normalization.json -o resources/normalization.json && \
-    curl -L https://raw.githubusercontent.com/zanfranceschi/rinha-de-backend-2026/main/resources/references.json.gz -o resources/references.json.gz
-
-# Build (cacheable) and run the preprocessor natively with SIMD optimized for the build machine.
-# BuildKit cache mounts drastically speed up repeated builds.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    RUSTFLAGS="-C target-cpu=native -C opt-level=3" cargo build --release --bin preprocessor
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    ./target/release/preprocessor
+# Stage 1: Prebuilt resources (specialist.bin + JSONs), pinned by digest for determinism.
+FROM --platform=$BUILDPLATFORM ${RESOURCES_IMAGE} AS resources
 
 # Stage 2: Compila a API via cross-compilation a partir da plataforma nativa ($BUILDPLATFORM)
 # Isso evita o bug de use-after-free em proc_macro do rustc 1.95 no QEMU sob Apple Silicon
@@ -68,10 +47,10 @@ WORKDIR /app
 COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/fraud-detection-api .
 COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/lb .
 
-# Copy the preprocessed data (shared across all architectures)
-COPY --from=preprocessor-runner /app/resources/*.bin ./resources/
-COPY --from=preprocessor-runner /app/resources/normalization.json ./resources/
-COPY --from=preprocessor-runner /app/resources/mcc_risk.json ./resources/
+# Copy the preprocessed data from the prebuilt resources image.
+COPY --from=resources /resources/specialist.bin ./resources/specialist.bin
+COPY --from=resources /resources/normalization.json ./resources/normalization.json
+COPY --from=resources /resources/mcc_risk.json ./resources/mcc_risk.json
 
 EXPOSE 9999
 CMD ["./fraud-detection-api"]
