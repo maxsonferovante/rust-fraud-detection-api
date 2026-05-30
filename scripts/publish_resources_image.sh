@@ -81,9 +81,13 @@ fi
 PINNED_REF="${IMAGE}@${DIGEST}"
 echo "pinning main Dockerfile to: ${PINNED_REF}"
 
-perl -pi -e "s|^ARG RESOURCES_IMAGE=.*$|ARG RESOURCES_IMAGE=${PINNED_REF}|m" "${DOCKERFILE_MAIN}"
+# NOTE: the digest reference contains "@sha256:...".
+# When using Perl with double quotes, "@sha256" is interpreted as an array and gets
+# interpolated away, producing an invalid tag reference like ":<digest>".
+# Escaping the '@' keeps the reference intact.
+ESCAPED_PINNED_REF="${PINNED_REF//@/\\@}"
+perl -pi -e "s|^ARG RESOURCES_IMAGE=.*$|ARG RESOURCES_IMAGE=${ESCAPED_PINNED_REF}|m" "${DOCKERFILE_MAIN}"
 
 echo "done."
 echo "resources image: ${IMAGE}:${TAG}"
 echo "pinned ref:      ${PINNED_REF}"
-
