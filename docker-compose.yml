@@ -22,7 +22,7 @@ services:
     command: ["./fraud-detection-api"]
     environment:
       - RUST_LOG=off
-      - N_PROBES=192
+      - N_PROBES=36
       - RINHA_INDEX_PATH=resources/specialist.bin
       - RINHA_SOCK_PATH=/tmp/sock/api1.sock
     volumes:
@@ -38,7 +38,7 @@ services:
     command: ["./fraud-detection-api"]
     environment:
       - RUST_LOG=off
-      - N_PROBES=192
+      - N_PROBES=36
       - RINHA_INDEX_PATH=resources/specialist.bin
       - RINHA_SOCK_PATH=/tmp/sock/api2.sock
     volumes:
