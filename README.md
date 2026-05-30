@@ -5,5 +5,5 @@
 | **Participants** | Maxson Ferovante                                                                        |
 | **Social**       | [GitHub](https://github.com/maxsonferovante)                                            |
 | **Repository**   | [rust-fraud-detection-api](https://github.com/maxsonferovante/rust-fraud-detection-api) |
-| **Stack**        | Rust, Axum, Nginx, Docker                                                               |
+| **Stack**        | Rust, Docker                                                               |
 | **Open to Work** | No                                                                                      |
