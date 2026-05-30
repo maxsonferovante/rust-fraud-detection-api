@@ -1,6 +1,6 @@
 services:
   lb:
-    build: .
+    image: maxsonferovante/fraud-detection-api:30-05-2026-15-08-10
     command: ["./lb"]
     environment:
       - FD_UPSTREAMS=/tmp/sock/api1.sock,/tmp/sock/api2.sock
@@ -18,7 +18,7 @@ services:
           memory: "30MB"
 
   api1:
-    build: .
+    image: maxsonferovante/fraud-detection-api:30-05-2026-15-08-10
     command: ["./fraud-detection-api"]
     environment:
       - RUST_LOG=off
@@ -34,7 +34,7 @@ services:
           memory: "160MB"
 
   api2:
-    build: .
+    image: maxsonferovante/fraud-detection-api:30-05-2026-15-08-10
     command: ["./fraud-detection-api"]
     environment:
       - RUST_LOG=off
