@@ -128,9 +128,8 @@ fn connect_upstream(path: &str) -> Result<UnixStream> {
         }
     }
 
-    Err(last_error
-        .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "connect failed")))
-    .with_context(|| format!("connect upstream socket {path}"))
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("connect failed")))
+        .with_context(|| format!("connect upstream socket {path}"))
 }
 
 fn bind_listener(bind_addr: &str, backlog: i32) -> Result<TcpListener> {

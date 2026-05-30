@@ -126,8 +126,8 @@ fn main() -> anyhow::Result<()> {
                 || vec![([0.0f32; 14], 0usize); K],
                 |mut a, b| {
                     for i in 0..K {
-                        for j in 0..14 {
-                            a[i].0[j] += b[i].0[j];
+                        for (j, slot) in a[i].0.iter_mut().enumerate() {
+                            *slot += b[i].0[j];
                         }
                         a[i].1 += b[i].1;
                     }
@@ -140,8 +140,8 @@ fn main() -> anyhow::Result<()> {
         for i in 0..K {
             if new_centroids_data[i].1 > 0 {
                 let mut new_c = [0.0f32; 14];
-                for j in 0..14 {
-                    new_c[j] = new_centroids_data[i].0[j] / new_centroids_data[i].1 as f32;
+                for (j, slot) in new_c.iter_mut().enumerate() {
+                    *slot = new_centroids_data[i].0[j] / new_centroids_data[i].1 as f32;
                 }
                 let shift = dist_sq(&new_c, &centroids[i]);
                 if shift > max_shift_sq {

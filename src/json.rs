@@ -1,6 +1,8 @@
+#[allow(dead_code)]
 const MAX_KNOWN_MERCHANTS: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct ParsedTransaction<'a> {
     pub amount: f32,
     pub installments: i32,
@@ -41,6 +43,7 @@ impl<'a> Default for ParsedTransaction<'a> {
     }
 }
 
+#[allow(dead_code)]
 pub fn parse_transaction(input: &[u8]) -> Option<ParsedTransaction<'_>> {
     let mut parser = Parser { input, pos: 0 };
     let mut out = ParsedTransaction::default();
@@ -52,6 +55,7 @@ pub fn parse_transaction(input: &[u8]) -> Option<ParsedTransaction<'_>> {
     Some(out)
 }
 
+#[allow(dead_code)]
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,

@@ -125,11 +125,13 @@ pub struct VectorStore {
 }
 
 impl VectorStore {
+    #[allow(dead_code)]
     #[inline]
     pub fn len(&self) -> usize {
         self.labels.len()
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub fn n_clusters(&self) -> usize {
         self.centroids.len()
@@ -256,8 +258,8 @@ impl VectorStore {
             #[cfg(not(target_arch = "x86_64"))]
             let dist = self.panel_distance_scalar(base, query);
 
-            for lane in 0..8 {
-                neighbors.push(dist[lane], self.labels[label_base + lane]);
+            for (lane, &d) in dist.iter().enumerate() {
+                neighbors.push(d, self.labels[label_base + lane]);
             }
         }
 
@@ -270,8 +272,8 @@ impl VectorStore {
         let label_base = label_start + full_panels * 8;
         for lane in 0..tail {
             let mut dist = 0i64;
-            for dim in 0..DIM {
-                let d = query[dim] as i32 - self.vectors_soa[base + lane * DIM + dim] as i32;
+            for (dim, &q) in query.iter().enumerate() {
+                let d = q as i32 - self.vectors_soa[base + lane * DIM + dim] as i32;
                 dist += (d * d) as i64;
             }
             neighbors.push(dist as f32, self.labels[label_base + lane]);
@@ -281,12 +283,12 @@ impl VectorStore {
     #[inline(always)]
     fn panel_distance_scalar(&self, base: usize, query: &[i16; DIM]) -> [f32; 8] {
         let mut dist = [0.0f32; 8];
-        for dim in 0..DIM {
-            let q = query[dim] as f32;
+        for (dim, &qv) in query.iter().enumerate() {
+            let q = qv as f32;
             let dim_base = base + dim * 8;
-            for lane in 0..8 {
+            for (lane, slot) in dist.iter_mut().enumerate() {
                 let d = q - self.vectors_soa[dim_base + lane] as f32;
-                dist[lane] += d * d;
+                *slot += d * d;
             }
         }
         dist

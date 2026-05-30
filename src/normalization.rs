@@ -26,6 +26,7 @@ fn parse_u32_4(b: &[u8]) -> u32 {
 /// Hora UTC extraída via offset fixo de bytes (b[11..13]).
 /// Custo: 2 subtrações + 1 multiplicação. Zero alocações.
 #[inline(always)]
+#[allow(dead_code)]
 pub fn hour_of_day(ts: &str) -> u8 {
     let b = ts.as_bytes();
     (b[11] - b'0') * 10 + (b[12] - b'0')
@@ -34,6 +35,7 @@ pub fn hour_of_day(ts: &str) -> u8 {
 /// Dia da semana via algoritmo de Tomohiko Sakamoto (1993).
 /// Retorna 0 = Segunda, ..., 6 = Domingo (compatível com number_from_monday() - 1).
 /// Custo: parsing de 4+2+2 bytes + 6 operações aritméticas. Zero alocações.
+#[allow(dead_code)]
 pub fn day_of_week(ts: &str) -> u8 {
     let b = ts.as_bytes();
     let mut y = parse_u32_4(&b[0..4]);
@@ -58,6 +60,7 @@ pub fn day_of_week(ts: &str) -> u8 {
 /// Converte um timestamp ISO 8601 em minutos totais desde 2000-01-01T00:00Z.
 /// Inclui cálculo completo de ano/mês/dia para diferenças entre datas distintas.
 /// Custo: parsing de bytes + ~10 operações aritméticas inteiras. Zero alocações.
+#[allow(dead_code)]
 fn datetime_to_minutes(ts: &str) -> i64 {
     let b = ts.as_bytes();
     let year = parse_u32_4(&b[0..4]) as i64;
@@ -89,6 +92,7 @@ fn datetime_to_minutes(ts: &str) -> i64 {
 /// Diferença absoluta em minutos entre dois timestamps ISO 8601.
 /// Cálculo completo incluindo cruzamento de dias e meses.
 #[inline]
+#[allow(dead_code)]
 fn minutes_diff(t1: &str, t2: &str) -> f32 {
     (datetime_to_minutes(t1) - datetime_to_minutes(t2)).abs() as f32
 }
@@ -98,6 +102,7 @@ fn minutes_diff(t1: &str, t2: &str) -> f32 {
 // mcc_table: vetor estático de 10000 posições — MCC como índice numérico → O(1)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub fn normalize(
     req: &TransactionRequest<'_>,
     constants: &NormalizationConstants,
@@ -148,11 +153,7 @@ pub fn normalize(
     vector[10] = if req.terminal.card_present { 1.0 } else { 0.0 };
 
     // 11: unknown_merchant — comparação de &str, sem alocação
-    let is_known = req
-        .customer
-        .known_merchants
-        .iter()
-        .any(|m| *m == req.merchant.id);
+    let is_known = req.customer.known_merchants.contains(&req.merchant.id);
     vector[11] = if is_known { 0.0 } else { 1.0 };
 
     // 12: mcc_risk — acesso O(1) via índice numérico, sem hash
@@ -169,6 +170,7 @@ pub fn normalize(
     vector
 }
 
+#[allow(dead_code)]
 pub fn normalize_i16(
     req: &TransactionRequest<'_>,
     constants: &NormalizationConstants,
@@ -177,6 +179,7 @@ pub fn normalize_i16(
     quantize_vector(&normalize(req, constants, mcc_table))
 }
 
+#[allow(dead_code)]
 pub fn normalize_parsed_i16(
     req: &ParsedTransaction<'_>,
     constants: &NormalizationConstants,
@@ -211,9 +214,7 @@ pub fn normalize_parsed_i16(
     vector[9] = q(if req.is_online { 1.0 } else { 0.0 });
     vector[10] = q(if req.card_present { 1.0 } else { 0.0 });
 
-    let is_known = req.known_merchants[..req.known_merchants_len]
-        .iter()
-        .any(|merchant| *merchant == req.merchant_id);
+    let is_known = req.known_merchants[..req.known_merchants_len].contains(&req.merchant_id);
     vector[11] = q(if is_known { 0.0 } else { 1.0 });
 
     vector[12] = q(if req.merchant_mcc < mcc_table.len() {
@@ -229,26 +230,23 @@ pub fn normalize_parsed_i16(
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 fn q(value: f32) -> i16 {
     quantize_value(value)
 }
 
 #[inline(always)]
 fn clamp(v: f32) -> f32 {
-    if v < 0.0 {
-        0.0
-    } else if v > 1.0 {
-        1.0
-    } else {
-        v
-    }
+    v.clamp(0.0, 1.0)
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 fn hour_of_day_bytes(ts: &[u8]) -> u8 {
     (ts[11] - b'0') * 10 + (ts[12] - b'0')
 }
 
+#[allow(dead_code)]
 pub fn day_of_week_bytes(ts: &[u8]) -> u8 {
     let mut y = parse_u32_4(&ts[0..4]);
     let m = parse_u8_2(&ts[5..7]) as u32;
@@ -266,6 +264,7 @@ pub fn day_of_week_bytes(ts: &[u8]) -> u8 {
     }
 }
 
+#[allow(dead_code)]
 fn datetime_to_minutes_bytes(ts: &[u8]) -> i64 {
     let year = parse_u32_4(&ts[0..4]) as i64;
     let month = parse_u8_2(&ts[5..7]) as i64;
@@ -290,6 +289,7 @@ fn datetime_to_minutes_bytes(ts: &[u8]) -> i64 {
 }
 
 #[inline]
+#[allow(dead_code)]
 fn minutes_diff_bytes(t1: &[u8], t2: &[u8]) -> f32 {
     (datetime_to_minutes_bytes(t1) - datetime_to_minutes_bytes(t2)).abs() as f32
 }

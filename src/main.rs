@@ -1,6 +1,8 @@
 mod fdpass;
+#[allow(dead_code)]
 mod json;
 mod models;
+#[allow(dead_code)]
 mod normalization;
 mod search;
 
