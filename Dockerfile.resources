@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1.7
+
+# Prebuilt Rinha 2026 resources (no RUN steps).
+# Build context must contain:
+#   - specialist.bin
+#   - normalization.json
+#   - mcc_risk.json
+FROM scratch
+
+COPY specialist.bin /resources/specialist.bin
+COPY normalization.json /resources/normalization.json
+COPY mcc_risk.json /resources/mcc_risk.json
+
