@@ -125,6 +125,16 @@ pub struct VectorStore {
 }
 
 impl VectorStore {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.labels.len()
+    }
+
+    #[inline]
+    pub fn n_clusters(&self) -> usize {
+        self.centroids.len()
+    }
+
     pub fn load<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let path = path.as_ref();
         let bytes = std::fs::read(path)

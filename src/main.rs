@@ -9,9 +9,13 @@ use crate::search::VectorStore;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs::File;
+#[cfg(not(target_os = "linux"))]
 use std::io::{Read, Write};
+#[cfg(not(target_os = "linux"))]
 use std::net::TcpStream;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
+#[cfg(not(target_os = "linux"))]
+use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixListener;
 #[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
@@ -94,6 +98,15 @@ fn load_state() -> Result<(AppState, String)> {
     let vector_store = VectorStore::load(&index_path)?;
 
     let ready_response = READY_RESPONSE.as_bytes().to_vec();
+    println!(
+        "loaded index={} vectors={} clusters={} n_probes={} norm_fields={} mcc_entries={}",
+        index_path,
+        vector_store.len(),
+        vector_store.n_clusters(),
+        n_probes,
+        7,
+        mcc_json.len()
+    );
 
     Ok((
         AppState {
