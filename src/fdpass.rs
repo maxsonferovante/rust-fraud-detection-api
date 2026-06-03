@@ -4,7 +4,29 @@ use std::mem;
 use std::os::fd::RawFd;
 
 #[allow(dead_code)]
+#[derive(Debug)]
+pub enum SendFdError {
+    WouldBlock,
+    Io,
+}
+
+#[allow(dead_code)]
 pub fn send_fd(sock_fd: RawFd, fd_to_send: RawFd) -> anyhow::Result<()> {
+    send_fd_inner(sock_fd, fd_to_send, 0).context("sendmsg(SCM_RIGHTS) failed")
+}
+
+#[allow(dead_code)]
+pub fn send_fd_nonblocking(sock_fd: RawFd, fd_to_send: RawFd) -> Result<(), SendFdError> {
+    send_fd_inner(sock_fd, fd_to_send, libc::MSG_DONTWAIT).map_err(|err| {
+        if err.kind() == io::ErrorKind::WouldBlock {
+            SendFdError::WouldBlock
+        } else {
+            SendFdError::Io
+        }
+    })
+}
+
+fn send_fd_inner(sock_fd: RawFd, fd_to_send: RawFd, flags: i32) -> io::Result<()> {
     let mut byte = [0u8; 1];
     let mut iov = libc::iovec {
         iov_base: byte.as_mut_ptr().cast(),
@@ -22,7 +44,9 @@ pub fn send_fd(sock_fd: RawFd, fd_to_send: RawFd) -> anyhow::Result<()> {
     unsafe {
         let cmsg = libc::CMSG_FIRSTHDR(&msg);
         if cmsg.is_null() {
-            bail!("failed to allocate fd-passing control message");
+            return Err(io::Error::other(
+                "failed to allocate fd-passing control message",
+            ));
         }
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
@@ -30,9 +54,9 @@ pub fn send_fd(sock_fd: RawFd, fd_to_send: RawFd) -> anyhow::Result<()> {
         let data = libc::CMSG_DATA(cmsg).cast::<RawFd>();
         *data = fd_to_send;
 
-        let sent = libc::sendmsg(sock_fd, &msg, libc::MSG_NOSIGNAL);
+        let sent = libc::sendmsg(sock_fd, &msg, libc::MSG_NOSIGNAL | flags);
         if sent < 0 {
-            return Err(io::Error::last_os_error()).context("sendmsg(SCM_RIGHTS) failed");
+            return Err(io::Error::last_os_error());
         }
     }
 

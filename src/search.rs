@@ -20,7 +20,7 @@ const CONFIDENT_DISTANCE_LIMIT: f32 = 1_960_000.0;
 
 #[derive(Debug, Clone, Copy)]
 struct IndexHeader {
-    version: u32,
+    has_bounds: bool,
     n_vectors: usize,
     n_clusters: usize,
     scale: f32,
@@ -184,8 +184,14 @@ impl VectorStore {
             centroids.push(row);
         }
 
-        let cluster_mins = read_i16_rows(&data, &mut cursor, header.n_clusters)?;
-        let cluster_maxs = read_i16_rows(&data, &mut cursor, header.n_clusters)?;
+        let (cluster_mins, cluster_maxs) = if header.has_bounds {
+            (
+                read_i16_rows(&data, &mut cursor, header.n_clusters)?,
+                read_i16_rows(&data, &mut cursor, header.n_clusters)?,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         let cluster_sizes = read_u32_vec(&data, &mut cursor, header.n_clusters)?;
         let cluster_offsets = read_u32_vec(&data, &mut cursor, header.n_clusters + 1)?;
@@ -209,6 +215,11 @@ impl VectorStore {
         if labels.len() != header.n_vectors {
             bail!("label count does not match vector count");
         }
+        let (cluster_mins, cluster_maxs) = if cluster_mins.is_empty() {
+            compute_cluster_bounds(&cluster_sizes, &panel_offsets, &vectors_soa)
+        } else {
+            (cluster_mins, cluster_maxs)
+        };
 
         Ok(Self {
             centroids,
@@ -457,7 +468,7 @@ fn read_header(data: &[u8], cursor: &mut usize) -> anyhow::Result<IndexHeader> {
     }
 
     Ok(IndexHeader {
-        version,
+        has_bounds: version >= INDEX_VERSION,
         n_vectors,
         n_clusters,
         scale,
@@ -474,6 +485,64 @@ fn read_i16_rows(data: &[u8], cursor: &mut usize, rows: usize) -> anyhow::Result
         out.push(row);
     }
     Ok(out)
+}
+
+fn compute_cluster_bounds(
+    cluster_sizes: &[u32],
+    panel_offsets: &[u32],
+    vectors_soa: &[i16],
+) -> (Vec<[i16; DIM]>, Vec<[i16; DIM]>) {
+    let mut mins = Vec::with_capacity(cluster_sizes.len());
+    let mut maxs = Vec::with_capacity(cluster_sizes.len());
+
+    for (cluster_idx, &size) in cluster_sizes.iter().enumerate() {
+        let size = size as usize;
+        if size == 0 {
+            mins.push([0i16; DIM]);
+            maxs.push([0i16; DIM]);
+            continue;
+        }
+
+        let mut lo = [i16::MAX; DIM];
+        let mut hi = [i16::MIN; DIM];
+        let panel_start = panel_offsets[cluster_idx] as usize;
+        let full_panels = size / 8;
+
+        for panel in 0..full_panels {
+            let base = panel_start + panel * DIM * 8;
+            for dim in 0..DIM {
+                let dim_base = base + dim * 8;
+                for lane in 0..8 {
+                    let value = vectors_soa[dim_base + lane];
+                    if value < lo[dim] {
+                        lo[dim] = value;
+                    }
+                    if value > hi[dim] {
+                        hi[dim] = value;
+                    }
+                }
+            }
+        }
+
+        let tail = size % 8;
+        let base = panel_start + full_panels * DIM * 8;
+        for lane in 0..tail {
+            for dim in 0..DIM {
+                let value = vectors_soa[base + lane * DIM + dim];
+                if value < lo[dim] {
+                    lo[dim] = value;
+                }
+                if value > hi[dim] {
+                    hi[dim] = value;
+                }
+            }
+        }
+
+        mins.push(lo);
+        maxs.push(hi);
+    }
+
+    (mins, maxs)
 }
 
 fn read_u8_vec(data: &[u8], cursor: &mut usize, len: usize) -> anyhow::Result<Vec<u8>> {

@@ -5,9 +5,6 @@ use anyhow::{Context, Result};
 use std::net::TcpListener;
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 #[cfg(target_os = "linux")]
@@ -22,10 +19,10 @@ fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(4096);
-    let workers = std::env::var("LB_WORKERS")
+    let accept_batch = std::env::var("LB_ACCEPT_BATCH")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(1);
+        .unwrap_or(64);
     let upstreams = std::env::var("FD_UPSTREAMS")
         .unwrap_or_else(|_| "/tmp/sock/api1.sock,/tmp/sock/api2.sock".into());
     let upstream_paths: Vec<String> = upstreams
@@ -36,76 +33,105 @@ fn main() -> Result<()> {
 
     anyhow::ensure!(!upstream_paths.is_empty(), "FD_UPSTREAMS cannot be empty");
 
-    let upstream_paths = Arc::new(upstream_paths);
-    let rr = Arc::new(AtomicUsize::new(0));
-
+    let upstreams = connect_all_upstreams(&upstream_paths)?;
     let listener =
         bind_listener(&bind_addr, backlog).with_context(|| format!("bind {bind_addr}"))?;
-    let mut handles = Vec::with_capacity(workers);
 
     println!(
-        "lb up addr={} workers={} backlog={} upstreams={:?}",
-        bind_addr, workers, backlog, *upstream_paths
+        "lb up addr={} backlog={} accept_batch={} upstreams={:?}",
+        bind_addr, backlog, accept_batch, upstream_paths
     );
 
-    let mut senders = Vec::with_capacity(workers);
-    for worker_id in 0..workers {
-        let upstream_paths = Arc::clone(&upstream_paths);
-        let rr = Arc::clone(&rr);
-        let (tx, rx) = mpsc::channel::<i32>();
-        senders.push(tx);
-        handles.push(thread::spawn(move || {
-            let upstreams = connect_all_upstreams(&upstream_paths).ok();
-            if upstreams.is_none() {
-                return;
+    #[cfg(target_os = "linux")]
+    {
+        run_linux(listener, upstreams, accept_batch)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        run_blocking(listener, upstreams)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux(listener: TcpListener, upstreams: Vec<UnixStream>, accept_batch: usize) -> Result<()> {
+    let mut rr = 0usize;
+    let lfd = listener.into_raw_fd();
+
+    loop {
+        let mut accepted = 0usize;
+        while accepted < accept_batch {
+            let cfd = unsafe {
+                libc::accept4(
+                    lfd,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+                )
+            };
+            if cfd < 0 {
+                let err = std::io::Error::last_os_error();
+                match err.raw_os_error() {
+                    Some(libc::EINTR) => continue,
+                    Some(code) if code == libc::EAGAIN || code == libc::EWOULDBLOCK => break,
+                    _ => return Err(err).context("accept4 failed"),
+                }
             }
-            let upstreams = upstreams.unwrap();
-            worker_loop(worker_id, upstreams, rr, rx);
-        }));
+
+            accepted += 1;
+            if let Err(err) = set_client_socket_options(cfd) {
+                unsafe { libc::close(cfd) };
+                return Err(err);
+            }
+            dispatch_client(&upstreams, &mut rr, cfd);
+        }
+
+        if accepted == 0 {
+            wait_for_accept(lfd);
+        }
     }
+}
 
-    accept_loop(listener, senders);
-
-    for handle in handles {
-        let _ = handle.join();
+#[cfg(not(target_os = "linux"))]
+fn run_blocking(listener: TcpListener, upstreams: Vec<UnixStream>) -> Result<()> {
+    let mut rr = 0usize;
+    for conn in listener.incoming() {
+        let conn = match conn {
+            Ok(conn) => conn,
+            Err(_) => continue,
+        };
+        let client_fd = conn.into_raw_fd();
+        if let Err(err) = set_client_socket_options(client_fd) {
+            unsafe { libc::close(client_fd) };
+            return Err(err);
+        }
+        dispatch_client(&upstreams, &mut rr, client_fd);
     }
-
     Ok(())
 }
 
-fn accept_loop(listener: TcpListener, senders: Vec<mpsc::Sender<i32>>) {
-    let mut next = 0usize;
-    loop {
-        let stream = match listener.accept() {
-            Ok((stream, _)) => stream,
-            Err(_) => continue,
-        };
+fn dispatch_client(upstreams: &[UnixStream], rr: &mut usize, client_fd: i32) {
+    let first = *rr % upstreams.len();
+    *rr = rr.wrapping_add(1);
 
-        let _ = stream.set_nodelay(true);
-        let client_fd = stream.into_raw_fd();
-
-        let idx = next % senders.len();
-        next = next.wrapping_add(1);
-        if senders[idx].send(client_fd).is_err() {
-            unsafe { libc::close(client_fd) };
+    let mut delivered = false;
+    for offset in 0..upstreams.len() {
+        let idx = (first + offset) % upstreams.len();
+        match fdpass::send_fd_nonblocking(upstreams[idx].as_raw_fd(), client_fd) {
+            Ok(()) => {
+                delivered = true;
+                break;
+            }
+            Err(fdpass::SendFdError::WouldBlock) => continue,
+            Err(fdpass::SendFdError::Io) => continue,
         }
     }
-}
 
-fn worker_loop(
-    _worker_id: usize,
-    upstreams: Vec<UnixStream>,
-    rr: Arc<AtomicUsize>,
-    rx: mpsc::Receiver<i32>,
-) {
-    for client_fd in rx {
-        let upstream_idx = rr.fetch_add(1, Ordering::Relaxed) % upstreams.len();
-        if fdpass::send_fd(upstreams[upstream_idx].as_raw_fd(), client_fd).is_err() {
-            unsafe { libc::close(client_fd) };
-            continue;
-        }
-        unsafe { libc::close(client_fd) };
+    if !delivered {
+        let _ = fdpass::send_fd(upstreams[first].as_raw_fd(), client_fd);
     }
+
+    unsafe { libc::close(client_fd) };
 }
 
 fn connect_all_upstreams(paths: &[String]) -> Result<Vec<UnixStream>> {
@@ -150,7 +176,13 @@ fn bind_with_backlog_linux(bind_addr: &str, backlog: i32) -> Result<TcpListener>
         .parse()
         .with_context(|| format!("invalid LB_BIND_ADDR {bind_addr}"))?;
 
-    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_INET,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
     if fd < 0 {
         return Err(std::io::Error::last_os_error()).context("socket() failed");
     }
@@ -161,6 +193,20 @@ fn bind_with_backlog_linux(bind_addr: &str, backlog: i32) -> Result<TcpListener>
             fd,
             libc::SOL_SOCKET,
             libc::SO_REUSEADDR,
+            (&one as *const i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEPORT,
+            (&one as *const i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_DEFER_ACCEPT,
             (&one as *const i32).cast(),
             std::mem::size_of::<i32>() as u32,
         );
@@ -202,4 +248,50 @@ fn bind_with_backlog_linux(bind_addr: &str, backlog: i32) -> Result<TcpListener>
 
     let listener = unsafe { TcpListener::from_raw_fd(fd as RawFd) };
     Ok(listener)
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_accept(lfd: i32) {
+    let mut pfd = libc::pollfd {
+        fd: lfd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let rc = unsafe { libc::poll(&mut pfd, 1, -1) };
+        if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+        }
+        break;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_client_socket_options(fd: i32) -> Result<()> {
+    let one: i32 = 1;
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_NODELAY,
+            (&one as *const i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_QUICKACK,
+            (&one as *const i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_client_socket_options(_fd: i32) -> Result<()> {
+    Ok(())
 }

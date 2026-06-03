@@ -13,7 +13,7 @@ const K: usize = 4096; // Número de clusters IVF
 const DIM: usize = 14;
 const SCALE: f32 = 10_000.0;
 const INDEX_MAGIC: u32 = u32::from_le_bytes(*b"RIVF");
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 2;
 const MAX_ITER: usize = 50; // Máximo de iterações K-means
                             // Threshold de convergência: se o deslocamento médio dos centroids for menor
                             // que isso, encerra cedo sem precisar de todas as MAX_ITER iterações.
