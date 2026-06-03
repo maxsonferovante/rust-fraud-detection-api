@@ -2,8 +2,6 @@ services:
   lb:
     build:
       context: .
-      args:
-        RESOURCES_IMAGE: maxsonferovante/fraud-detection-resources:local
     platform: linux/amd64
     command: ["./lb"]
     cpuset: "2,3"
@@ -33,8 +31,6 @@ services:
   api1:
     build:
       context: .
-      args:
-        RESOURCES_IMAGE: maxsonferovante/fraud-detection-resources:local
     platform: linux/amd64
     command: ["./fraud-detection-api"]
     cpuset: "0"
@@ -60,8 +56,6 @@ services:
   api2:
     build:
       context: .
-      args:
-        RESOURCES_IMAGE: maxsonferovante/fraud-detection-resources:local
     platform: linux/amd64
     command: ["./fraud-detection-api"]
     cpuset: "1"

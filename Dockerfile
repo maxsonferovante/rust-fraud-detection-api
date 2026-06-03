@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG RESOURCES_IMAGE=maxsonferovante/fraud-detection-resources@sha256:28b582d57bd8c9c24266b81429ab5a5b6572342b26ddeffce18ad444ee8c7479
+ARG RESOURCES_IMAGE=maxsonferovante/fraud-detection-resources@sha256:bbe8b08236207e65d635294ecaff06e3e10091fee6a8b12870d01a00df5ca9c7
 
 # Stage 1: Prebuilt resources (specialist.bin + JSONs), pinned by digest for determinism.
 FROM --platform=$BUILDPLATFORM ${RESOURCES_IMAGE} AS resources
