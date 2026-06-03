@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG RESOURCES_IMAGE=maxsonferovante/fraud-detection-resources@sha256:ef6961c9638e8d06c50b7fb434fdc202a9675a03748b78db5e88c06e8dfc061e
+ARG RESOURCES_IMAGE=maxsonferovante/fraud-detection-resources@sha256:28b582d57bd8c9c24266b81429ab5a5b6572342b26ddeffce18ad444ee8c7479
 
 # Stage 1: Prebuilt resources (specialist.bin + JSONs), pinned by digest for determinism.
 FROM --platform=$BUILDPLATFORM ${RESOURCES_IMAGE} AS resources
@@ -28,14 +28,14 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target-cache \
     CARGO_TARGET_DIR=/app/target-cache \
-    RUSTFLAGS="-C target-cpu=haswell -C opt-level=3" cargo build --release --target x86_64-unknown-linux-gnu --bin fraud-detection-api --bin lb
+    RUSTFLAGS="-C target-cpu=haswell -C target-feature=+avx2,+fma,+bmi2"  cargo build --release --target x86_64-unknown-linux-gnu --bin fraud-detection-api --bin lb
 
 # Now copy the full source tree and build the real binaries.
 COPY . .
 
 # Haswell: AVX2, FMA, BMI1/BMI2 — instruções vetoriais para o Mac Mini Intel
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    RUSTFLAGS="-C target-cpu=haswell -C opt-level=3" cargo build --release --target x86_64-unknown-linux-gnu --bin fraud-detection-api --bin lb
+    RUSTFLAGS="-C target-cpu=haswell -C target-feature=+avx2,+fma,+bmi2"  cargo build --release --target x86_64-unknown-linux-gnu --bin fraud-detection-api --bin lb
 
 # Stage 3: Runtime — mesma plataforma do binário compilado
 FROM --platform=linux/amd64 debian:bookworm-slim AS runtime

@@ -77,9 +77,9 @@ fn main() -> Result<()> {
 
 fn load_state() -> Result<(AppState, String)> {
     let n_probes = std::env::var("N_PROBES")
-        .unwrap_or_else(|_| "192".to_string())
+        .unwrap_or_else(|_| "8".to_string())
         .parse::<usize>()
-        .unwrap_or(192);
+        .unwrap_or(8);
 
     let norm_file = File::open("resources/normalization.json")?;
     let normalization_constants: NormalizationConstants = serde_json::from_reader(norm_file)?;

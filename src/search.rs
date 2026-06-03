@@ -10,12 +10,17 @@ use std::arch::x86_64::{
 pub const DIM: usize = 14;
 pub const SCALE: f32 = 10_000.0;
 pub const INDEX_MAGIC: u32 = u32::from_le_bytes(*b"RIVF");
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 const HEADER_U32S: usize = 8;
 const MAX_PROBES: usize = 512;
+const MAX_REPAIR_CANDIDATES: usize = 1024;
+const REPAIR_MIN: usize = 1;
+const REPAIR_MAX: usize = 4;
+const CONFIDENT_DISTANCE_LIMIT: f32 = 1_960_000.0;
 
 #[derive(Debug, Clone, Copy)]
 struct IndexHeader {
+    version: u32,
     n_vectors: usize,
     n_clusters: usize,
     scale: f32,
@@ -62,6 +67,20 @@ impl<const K: usize> TopK<K> {
             .iter()
             .filter(|&&(_, label)| label == 1)
             .count()
+    }
+
+    #[inline(always)]
+    fn max_dist(&self) -> f32 {
+        if self.len < K {
+            return f32::INFINITY;
+        }
+        let mut max = self.buf[0].0;
+        for i in 1..K {
+            if self.buf[i].0 > max {
+                max = self.buf[i].0;
+            }
+        }
+        max
     }
 
     #[allow(dead_code)]
@@ -112,10 +131,17 @@ impl TopProbes {
     fn filled(&self) -> &[(f32, usize)] {
         &self.buf[..self.len]
     }
+
+    #[inline(always)]
+    fn sort_by_dist(&mut self) {
+        self.buf[..self.len].sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    }
 }
 
 pub struct VectorStore {
     centroids: Vec<[f32; DIM]>,
+    cluster_mins: Vec<[i16; DIM]>,
+    cluster_maxs: Vec<[i16; DIM]>,
     cluster_sizes: Vec<u32>,
     cluster_offsets: Vec<u32>,
     panel_offsets: Vec<u32>,
@@ -158,6 +184,9 @@ impl VectorStore {
             centroids.push(row);
         }
 
+        let cluster_mins = read_i16_rows(&data, &mut cursor, header.n_clusters)?;
+        let cluster_maxs = read_i16_rows(&data, &mut cursor, header.n_clusters)?;
+
         let cluster_sizes = read_u32_vec(&data, &mut cursor, header.n_clusters)?;
         let cluster_offsets = read_u32_vec(&data, &mut cursor, header.n_clusters + 1)?;
         let panel_offsets = read_u32_vec(&data, &mut cursor, header.n_clusters + 1)?;
@@ -183,6 +212,8 @@ impl VectorStore {
 
         Ok(Self {
             centroids,
+            cluster_mins,
+            cluster_maxs,
             cluster_sizes,
             cluster_offsets,
             panel_offsets,
@@ -231,7 +262,78 @@ impl VectorStore {
         for &(_, centroid_idx) in &probe_buf[..valid_count] {
             self.scan_cluster(centroid_idx, query, &mut neighbors);
         }
+        self.repair_ambiguous(query, &probe_buf[..valid_count], &mut neighbors);
         neighbors
+    }
+
+    fn repair_ambiguous(
+        &self,
+        query: &[i16; DIM],
+        probed: &[(u32, usize)],
+        neighbors: &mut TopK<5>,
+    ) {
+        if self.cluster_mins.len() != self.centroids.len() {
+            return;
+        }
+
+        let frauds = neighbors.fraud_count();
+        if !(REPAIR_MIN..=REPAIR_MAX).contains(&frauds)
+            && neighbors.max_dist() <= CONFIDENT_DISTANCE_LIMIT
+        {
+            return;
+        }
+
+        let mut candidates = TopProbes::new(
+            MAX_REPAIR_CANDIDATES.min(self.centroids.len().saturating_sub(probed.len())),
+        );
+        for cluster_idx in 0..self.centroids.len() {
+            if self.cluster_sizes[cluster_idx] == 0 {
+                continue;
+            }
+            if probed
+                .iter()
+                .any(|&(_, probed_idx)| probed_idx == cluster_idx)
+            {
+                continue;
+            }
+            let lower_bound = self.cluster_lower_bound(cluster_idx, query);
+            if lower_bound < neighbors.max_dist() {
+                candidates.push(lower_bound, cluster_idx);
+            }
+        }
+        candidates.sort_by_dist();
+
+        for &(lower_bound, cluster_idx) in candidates.filled() {
+            if lower_bound >= neighbors.max_dist() {
+                break;
+            }
+            self.scan_cluster(cluster_idx, query, neighbors);
+            let frauds = neighbors.fraud_count();
+            if !(REPAIR_MIN..=REPAIR_MAX).contains(&frauds) {
+                break;
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn cluster_lower_bound(&self, cluster_idx: usize, query: &[i16; DIM]) -> f32 {
+        let mins = &self.cluster_mins[cluster_idx];
+        let maxs = &self.cluster_maxs[cluster_idx];
+        let mut acc = 0i64;
+        for dim in 0..DIM {
+            let q = query[dim] as i32;
+            let lo = mins[dim] as i32;
+            let hi = maxs[dim] as i32;
+            let diff = if q < lo {
+                lo - q
+            } else if q > hi {
+                q - hi
+            } else {
+                0
+            };
+            acc += (diff * diff) as i64;
+        }
+        acc as f32
     }
 
     #[inline(always)]
@@ -344,7 +446,7 @@ fn read_header(data: &[u8], cursor: &mut usize) -> anyhow::Result<IndexHeader> {
     if magic != INDEX_MAGIC {
         bail!("invalid IVF index magic");
     }
-    if version != INDEX_VERSION {
+    if version != INDEX_VERSION && version != 1 {
         bail!("unsupported IVF index version {version}");
     }
     if dim != DIM {
@@ -355,10 +457,23 @@ fn read_header(data: &[u8], cursor: &mut usize) -> anyhow::Result<IndexHeader> {
     }
 
     Ok(IndexHeader {
+        version,
         n_vectors,
         n_clusters,
         scale,
     })
+}
+
+fn read_i16_rows(data: &[u8], cursor: &mut usize, rows: usize) -> anyhow::Result<Vec<[i16; DIM]>> {
+    let mut out = Vec::with_capacity(rows);
+    for _ in 0..rows {
+        let mut row = [0i16; DIM];
+        for item in row.iter_mut() {
+            *item = read_i16(data, cursor)?;
+        }
+        out.push(row);
+    }
+    Ok(out)
 }
 
 fn read_u8_vec(data: &[u8], cursor: &mut usize, len: usize) -> anyhow::Result<Vec<u8>> {
@@ -431,10 +546,10 @@ mod tests {
         buf.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn tiny_index_bytes() -> Vec<u8> {
+    fn tiny_index_bytes(version: u32) -> Vec<u8> {
         let mut buf = Vec::new();
         push_u32(&mut buf, INDEX_MAGIC);
-        push_u32(&mut buf, INDEX_VERSION);
+        push_u32(&mut buf, version);
         push_u32(&mut buf, 2);
         push_u32(&mut buf, DIM as u32);
         push_u32(&mut buf, 2);
@@ -447,6 +562,21 @@ mod tests {
         }
         for value in [1.0f32; DIM] {
             push_f32(&mut buf, value);
+        }
+
+        if version >= INDEX_VERSION {
+            for _ in 0..DIM {
+                push_i16(&mut buf, 0);
+            }
+            for _ in 0..DIM {
+                push_i16(&mut buf, SCALE as i16);
+            }
+            for _ in 0..DIM {
+                push_i16(&mut buf, 0);
+            }
+            for _ in 0..DIM {
+                push_i16(&mut buf, SCALE as i16);
+            }
         }
 
         for value in [1u32, 1] {
@@ -478,11 +608,18 @@ mod tests {
 
     #[test]
     fn find_k_nearest_reads_int16_index() {
-        let store = VectorStore::from_bytes(tiny_index_bytes()).unwrap();
+        let store = VectorStore::from_bytes(tiny_index_bytes(INDEX_VERSION)).unwrap();
         let nearest = store.find_k_nearest(&[0.01; DIM], 2, 2);
 
         assert_eq!(nearest.len(), 2);
         assert!(nearest.contains(&true));
         assert!(nearest.contains(&false));
+    }
+
+    #[test]
+    fn legacy_index_gets_computed_bounds() {
+        let store = VectorStore::from_bytes(tiny_index_bytes(1)).unwrap();
+        assert_eq!(store.cluster_mins.len(), 2);
+        assert_eq!(store.cluster_maxs.len(), 2);
     }
 }

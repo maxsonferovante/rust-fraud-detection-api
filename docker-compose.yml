@@ -14,7 +14,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.16"
+          cpus: "0.30"
           memory: "30MB"
 
   api1:
@@ -22,7 +22,7 @@ services:
     command: ["./fraud-detection-api"]
     environment:
       - RUST_LOG=off
-      - N_PROBES=36
+      - N_PROBES=8
       - RINHA_INDEX_PATH=resources/specialist.bin
       - RINHA_SOCK_PATH=/tmp/sock/api1.sock
     volumes:
@@ -30,7 +30,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.42"
+          cpus: "0.35"
           memory: "160MB"
 
   api2:
@@ -38,7 +38,7 @@ services:
     command: ["./fraud-detection-api"]
     environment:
       - RUST_LOG=off
-      - N_PROBES=36
+      - N_PROBES=8
       - RINHA_INDEX_PATH=resources/specialist.bin
       - RINHA_SOCK_PATH=/tmp/sock/api2.sock
     volumes:
@@ -47,7 +47,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.42"
+          cpus: "0.35"
           memory: "160MB"
 
 volumes:

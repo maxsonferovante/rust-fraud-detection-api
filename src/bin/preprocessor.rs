@@ -289,6 +289,19 @@ fn write_specialist_index(
     }
 
     for cluster in clusters {
+        let (lo, _) = cluster_bounds(cluster);
+        for value in lo {
+            file.write_all(&value.to_le_bytes())?;
+        }
+    }
+    for cluster in clusters {
+        let (_, hi) = cluster_bounds(cluster);
+        for value in hi {
+            file.write_all(&value.to_le_bytes())?;
+        }
+    }
+
+    for cluster in clusters {
         file.write_all(&(cluster.len() as u32).to_le_bytes())?;
     }
     for offset in cluster_offsets {
@@ -306,4 +319,25 @@ fn write_specialist_index(
     }
     file.flush()?;
     Ok(())
+}
+
+fn cluster_bounds(cluster: &[&RawVector]) -> ([i16; DIM], [i16; DIM]) {
+    if cluster.is_empty() {
+        return ([0i16; DIM], [0i16; DIM]);
+    }
+
+    let mut lo = [i16::MAX; DIM];
+    let mut hi = [i16::MIN; DIM];
+    for vector in cluster {
+        for dim in 0..DIM {
+            let value = quantize_value(vector.vector[dim]);
+            if value < lo[dim] {
+                lo[dim] = value;
+            }
+            if value > hi[dim] {
+                hi[dim] = value;
+            }
+        }
+    }
+    (lo, hi)
 }

@@ -16,7 +16,7 @@ use std::fs::File;
 use std::time::Instant;
 
 const DEFAULT_TEST_DATA: &str = "../rinha-de-backend-2026/test/test-data.json";
-const PROBES_TO_EVALUATE: [usize; 10] = [10, 16, 32, 64, 96, 128, 160, 192, 256, 384];
+const PROBES_TO_EVALUATE: [usize; 10] = [8, 10, 12, 16, 24, 32, 64, 96, 128, 192];
 const FRAUD_THRESHOLD: f32 = 0.6;
 const EPSILON_MIN: f64 = 0.001;
 const BETA: f64 = 300.0;
