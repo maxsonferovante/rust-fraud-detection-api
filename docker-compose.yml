@@ -1,9 +1,22 @@
 services:
   lb:
-    build: .
+    build:
+      context: .
+      args:
+        RESOURCES_IMAGE: maxsonferovante/fraud-detection-resources:local
+    platform: linux/amd64
     command: ["./lb"]
+    cpuset: "2,3"
+    logging:
+      driver: "none"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     environment:
       - FD_UPSTREAMS=/tmp/sock/api1.sock,/tmp/sock/api2.sock
+      - LB_BACKLOG=65535
+      - LB_ACCEPT_BATCH=128
     volumes:
       - sock-volume:/tmp/sock
     ports:
@@ -15,11 +28,22 @@ services:
       resources:
         limits:
           cpus: "0.30"
-          memory: "30MB"
+          memory: "20MB"
 
   api1:
-    build: .
+    build:
+      context: .
+      args:
+        RESOURCES_IMAGE: maxsonferovante/fraud-detection-resources:local
+    platform: linux/amd64
     command: ["./fraud-detection-api"]
+    cpuset: "0"
+    logging:
+      driver: "none"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     environment:
       - RUST_LOG=off
       - N_PROBES=8
@@ -31,11 +55,22 @@ services:
       resources:
         limits:
           cpus: "0.35"
-          memory: "160MB"
+          memory: "165MB"
 
   api2:
-    build: .
+    build:
+      context: .
+      args:
+        RESOURCES_IMAGE: maxsonferovante/fraud-detection-resources:local
+    platform: linux/amd64
     command: ["./fraud-detection-api"]
+    cpuset: "1"
+    logging:
+      driver: "none"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     environment:
       - RUST_LOG=off
       - N_PROBES=8
@@ -48,7 +83,7 @@ services:
       resources:
         limits:
           cpus: "0.35"
-          memory: "160MB"
+          memory: "165MB"
 
 volumes:
   sock-volume:
