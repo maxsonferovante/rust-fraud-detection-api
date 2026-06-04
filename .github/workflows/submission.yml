@@ -61,8 +61,9 @@ jobs:
           # Checkout necessary files from master
           git checkout master -- nginx.conf info.json docker-compose.yml README.md LICENSE
 
-          # Update docker-compose.yml with the new image tag
-          sed -i "s|build: .|image: maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}|g" docker-compose.yml
+          # Replace each service build block with the published image tag
+          IMAGE="maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}"
+          perl -0pi -e 's/^\s{4}build:\n\s{6}context: \.\n/    image: $ENV{IMAGE}\n/mg' docker-compose.yml
 
           # Commit and push back to submission branch
           git add nginx.conf info.json docker-compose.yml README.md LICENSE
