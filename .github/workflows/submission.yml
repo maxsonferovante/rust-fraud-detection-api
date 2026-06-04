@@ -59,16 +59,16 @@ jobs:
           git rm -rf .
 
           # Checkout necessary files from master
-          git checkout master -- nginx.conf info.json docker-compose.yml README.md LICENSE
+          git checkout master -- info.json docker-compose.yml README.md LICENSE
 
           # Replace each service build block with the published image tag
           IMAGE="maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}"
           perl -0pi -e 's/^\s{4}build:\n\s{6}context: \.\n/    image: $ENV{IMAGE}\n/mg' docker-compose.yml
 
           # Commit and push back to submission branch
-          git add nginx.conf info.json docker-compose.yml README.md LICENSE
+          git add info.json docker-compose.yml README.md LICENSE
           git commit -m "chore: automatic submission update - tag ${{ steps.vars.outputs.tag }}"
-          
+
           # Push using the GITHUB_TOKEN for authentication
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git submission
 
@@ -79,12 +79,12 @@ jobs:
           TAG: ${{ steps.vars.outputs.tag }}
         run: |
           gh pr comment $PR_NUMBER --body "🚀 **Submissão para a Rinha de Backend 2026 atualizada!**
-          
+
           A branch \`submission\` foi sincronizada com sucesso e a nova imagem multi-plataforma (amd64/arm64) foi publicada.
-          
+
           **Imagem:** \`maxsonferovante/fraud-detection-api:$TAG\`
           **Link:** [Docker Hub](https://hub.docker.com/r/maxsonferovante/fraud-detection-api/tags?name=$TAG)
-          
+
           Este Pull Request está sendo fechado automaticamente pois o processo de submissão foi concluído."
-          
+
           gh pr close $PR_NUMBER
