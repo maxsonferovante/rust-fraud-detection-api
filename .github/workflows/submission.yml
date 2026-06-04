@@ -62,8 +62,7 @@ jobs:
           git checkout master -- info.json docker-compose.yml README.md LICENSE
 
           # Replace each service build block with the published image tag
-          IMAGE="maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}"
-          perl -0pi -e 's/^\s{4}build:\n\s{6}context: \.\n/    image: $ENV{IMAGE}\n/mg' docker-compose.yml
+          python3 -c 'import pathlib,re,sys; path=pathlib.Path(sys.argv[1]); image=sys.argv[2]; text=path.read_text(); text,count=re.subn(r"(?m)^ {4}build:\n {6}context: \.\n", f"    image: {image}\n", text); assert count == 3, f"expected 3 build blocks, replaced {count}"; assert "image:" in text, "submission compose has no image entries"; path.write_text(text)' "$PWD/docker-compose.yml" "maxsonferovante/fraud-detection-api:${{ steps.vars.outputs.tag }}"
 
           # Commit and push back to submission branch
           git add info.json docker-compose.yml README.md LICENSE
