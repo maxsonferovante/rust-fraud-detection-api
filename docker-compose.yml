@@ -1,7 +1,6 @@
 services:
   lb:
-    build:
-      context: .
+    image: maxsonferovante/fraud-detection-api:04-06-2026-00-54-31
     platform: linux/amd64
     command: ["./lb"]
     cpuset: "2,3"
@@ -29,8 +28,7 @@ services:
           memory: "20MB"
 
   api1:
-    build:
-      context: .
+    image: maxsonferovante/fraud-detection-api:04-06-2026-00-54-31
     platform: linux/amd64
     command: ["./fraud-detection-api"]
     cpuset: "0"
@@ -54,8 +52,7 @@ services:
           memory: "165MB"
 
   api2:
-    build:
-      context: .
+    image: maxsonferovante/fraud-detection-api:04-06-2026-00-54-31
     platform: linux/amd64
     command: ["./fraud-detection-api"]
     cpuset: "1"
